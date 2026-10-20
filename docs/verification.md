@@ -30,6 +30,26 @@ v0.2.0。実装済みと実機検証済みを区別して記載しています�
 実モデルの推論検証はLinux上の短いサンプルで、長時間・日本語・複数話者の精度を
 保証する測定ではありません。
 
+## Windows同梱版で確認したこと
+
+ソース `7f8769b34971f86b8d8edc22e95e84e64ee4862d` の
+[Windows/Linux CI](https://github.com/kitworks-iino/giji-automemo/actions/runs/39473006070) と
+[Windowsポータブルビルド](https://github.com/kitworks-iino/giji-automemo/actions/runs/39473008565)
+が成功しました。
+
+- Windows上でPythonテスト162件、画面ビルド、EXE生成、モデル・ライセンス・対応ソースの同梱。
+- 作成したZIPを別の一時フォルダーへ展開し、そのEXEで検証。
+- 同梱Whisper smallのCPU int8推論、VAD、話者分離ONNX、PyAV音声デコードを実行。
+  モデル取得をオフライン設定にし、利用者用モデルフォルダーが作られないことを確認。
+- Windows UI Automation、Outlook連携用COMライブラリ、資格情報バックエンドのロード。
+- 同梱VC++ DLL 11個を配置し、必要なCRT DLLが配布フォルダーから読み込まれることを確認。
+- 認証付きローカルAPI、デモデータ、同梱モデルの準備状態、ビルド済み画面・静的ファイルを確認。
+- ZIPの整合性とSHA-256を検証。配布ZIPは835,797,587 bytes。
+
+Windowsでのモデル検証は無音サンプルを使う依存関係・実行確認で、日本語認識や
+複数話者の精度を評価するものではありません。Hosted runnerにOutlookアカウント、
+実際のTeams会議、マイク・ヘッドセットはありません。
+
 ## 利用するWindows PCで必要な確認
 
 - 利用中の従来版Outlookのプロファイルで、予定・定期開催回・変更・取消を取得できること。
