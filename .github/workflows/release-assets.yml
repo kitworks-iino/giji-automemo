@@ -1,0 +1,73 @@
+name: Release assets
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag (for example v0.1.0)
+        required: true
+        default: v0.1.0
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+    steps:
+      - name: Validate tag
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Build frontend from release source
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+      - name: Assemble and verify source archive
+        run: |
+          git archive --format=zip --prefix=giji-automemo/ -o giji-automemo-windows-source.zip HEAD
+          python - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile, ZIP_DEFLATED
+          archive = Path("giji-automemo-windows-source.zip")
+          with ZipFile(archive, "a", compression=ZIP_DEFLATED) as output:
+              for path in Path("frontend/dist").rglob("*"):
+                  if path.is_file():
+                      output.write(path, "giji-automemo/" + path.as_posix())
+              output.writestr(
+                  "giji-automemo/START-HERE.txt",
+                  "Windows 11 x64 / Python 3.11 x64 required.\n"
+                  "Source package with prebuilt UI. Node.js is not needed.\n\n"
+                  "Open PowerShell in this folder and run:\n"
+                  "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\setup.ps1 -SkipFrontend\n"
+                  "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\start.ps1\n\n"
+                  "Read README.md and docs/microsoft-setup.md for initial settings.\n"
+                  "Models, credentials and recordings are not included.\n"
+                  "This is not a compiled or signed Windows EXE.\n",
+              )
+          with ZipFile(archive) as output:
+              names = output.namelist()
+              assert len(names) == len(set(names))
+              assert "giji-automemo/frontend/dist/index.html" in names
+              assert output.testzip() is None
+          PY
+          sha256sum giji-automemo-windows-source.zip > SHA256SUMS.txt
+      - name: Upload to existing release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release view "$RELEASE_TAG" >/dev/null
+          gh release upload "$RELEASE_TAG" giji-automemo-windows-source.zip SHA256SUMS.txt --clobber
