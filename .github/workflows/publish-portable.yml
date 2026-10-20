@@ -1,0 +1,153 @@
+name: Publish verified Windows portable
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Successful Windows portable release workflow run ID
+        required: true
+        type: string
+      tag:
+        description: Existing release tag pointing at the verified build commit
+        required: true
+        default: v0.2.0
+        type: string
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: publish-portable-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SOURCE_RUN_ID: ${{ inputs.run_id }}
+      RELEASE_TAG: ${{ inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Validate input formats
+        shell: bash
+        run: |
+          [[ "$SOURCE_RUN_ID" =~ ^[1-9][0-9]{0,23}$ ]] || { echo "Invalid run ID."; exit 1; }
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Invalid release tag."; exit 1; }
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          persist-credentials: false
+      - name: Verify build provenance and select its immutable artifact ID
+        id: provenance
+        shell: bash
+        run: |
+          git rev-parse HEAD > expected-commit.txt
+          gh api "repos/$GH_REPO/actions/runs/$SOURCE_RUN_ID" > source-run.json
+          gh api "repos/$GH_REPO/actions/workflows/windows-portable.yml" > source-workflow.json
+          gh api --paginate --slurp "repos/$GH_REPO/actions/runs/$SOURCE_RUN_ID/artifacts" > source-artifacts.json
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import re
+
+          repository = os.environ["GH_REPO"]
+          run_id = int(os.environ["SOURCE_RUN_ID"])
+          expected = Path("expected-commit.txt").read_text().strip()
+          assert re.fullmatch(r"[0-9a-f]{40}", expected), "Invalid tag commit."
+          run = json.loads(Path("source-run.json").read_text())
+          workflow = json.loads(Path("source-workflow.json").read_text())
+          assert run["id"] == run_id, "Unexpected workflow run."
+          assert run["repository"]["full_name"] == repository, "Repository mismatch."
+          assert run["head_repository"]["full_name"] == repository, "Fork builds are not accepted."
+          assert run["status"] == "completed" and run["conclusion"] == "success", "Build did not succeed."
+          assert run["event"] == "workflow_dispatch", "Unexpected build trigger."
+          assert run["path"] == ".github/workflows/windows-portable.yml", "Unexpected workflow path."
+          assert workflow["path"] == run["path"] and workflow["id"] == run["workflow_id"], "Workflow ID mismatch."
+          assert run["head_sha"] == expected, "The release tag is not the build's commit."
+          pages = json.loads(Path("source-artifacts.json").read_text())
+          artifacts = [artifact for page in pages for artifact in page["artifacts"]]
+          matches = [
+              item for item in artifacts
+              if item["name"] == f"windows-portable-{run_id}" and not item["expired"]
+          ]
+          assert len(matches) == 1, "Exactly one unexpired verified artifact must exist."
+          artifact = matches[0]
+          if artifact.get("workflow_run"):
+              assert artifact["workflow_run"]["id"] == run_id, "Artifact run mismatch."
+              assert artifact["workflow_run"]["head_sha"] == expected, "Artifact commit mismatch."
+          assert isinstance(artifact["id"], int) and artifact["id"] > 0, "Invalid artifact ID."
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
+              output.write(f"artifact_id={artifact['id']}\n")
+              output.write(f"expected_commit={expected}\n")
+          print(f"Verified successful run {run_id} at {expected}; artifact ID {artifact['id']}.")
+          PY
+      - name: Download the verified artifact by ID
+        uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ steps.provenance.outputs.artifact_id }}
+          path: portable
+          merge-multiple: true
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.run_id }}
+      - name: Verify allowlisted files, SHA-256, ZIP integrity and embedded source commit
+        env:
+          EXPECTED_COMMIT: ${{ steps.provenance.outputs.expected_commit }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path, PurePosixPath
+          import re
+          import zipfile
+
+          folder = Path("portable")
+          allowed = {"giji-automemo-windows-x64.zip", "portable-SHA256SUMS.txt"}
+          files = [path for path in folder.rglob("*") if path.is_file()]
+          assert {path.relative_to(folder).as_posix() for path in files} == allowed, "Unexpected artifact files."
+          assert all(not path.is_symlink() for path in folder.rglob("*")), "Symlink artifact rejected."
+          checksum = (folder / "portable-SHA256SUMS.txt").read_text(encoding="ascii")
+          match = re.fullmatch(r"([0-9a-f]{64})  giji-automemo-windows-x64\.zip\n?", checksum)
+          assert match, "Unexpected checksum file format."
+          archive_path = folder / "giji-automemo-windows-x64.zip"
+          assert 0 < archive_path.stat().st_size < 2 * 1024**3, "Invalid ZIP size."
+          with archive_path.open("rb") as source:
+              actual = hashlib.file_digest(source, "sha256").hexdigest()
+          assert actual == match.group(1), "Portable ZIP checksum mismatch."
+          with zipfile.ZipFile(archive_path) as archive:
+              names = archive.namelist()
+              assert len(names) == len(set(names)), "Duplicate archive paths."
+              for name in names:
+                  path = PurePosixPath(name)
+                  assert not path.is_absolute() and ".." not in path.parts and "\\" not in name, "Unsafe ZIP path."
+                  assert path.parts[0] == "GijiAutoMemo", "Unexpected ZIP root."
+              for name in (
+                  "GijiAutoMemo/GijiAutoMemo.exe",
+                  "GijiAutoMemo/_internal/frontend/dist/index.html",
+                  "GijiAutoMemo/models/whisper-small/.complete",
+                  "GijiAutoMemo/models/diarization/.complete",
+                  "GijiAutoMemo/licenses/.complete",
+              ):
+                  assert name in names, f"Missing verified build file: {name}"
+              source_info = archive.getinfo("GijiAutoMemo/third-party-sources/SOURCES.json")
+              assert source_info.file_size < 10 * 1024**2, "Oversized source manifest."
+              manifest = json.loads(archive.read(source_info))
+              assert manifest["source_commit"] == os.environ["EXPECTED_COMMIT"], "Bundled source commit mismatch."
+              assert archive.testzip() is None, "ZIP integrity failure."
+          print(f"Verified portable ZIP SHA-256: {actual}")
+          PY
+      - name: Attach the existing verified files to the existing release
+        env:
+          EXPECTED_COMMIT: ${{ steps.provenance.outputs.expected_commit }}
+        shell: bash
+        run: |
+          CURRENT_TAG_COMMIT="$(gh api "repos/$GH_REPO/commits/$RELEASE_TAG" --jq .sha)"
+          [[ "$CURRENT_TAG_COMMIT" == "$EXPECTED_COMMIT" ]] || { echo "Release tag moved after validation."; exit 1; }
+          gh release view "$RELEASE_TAG" >/dev/null
+          gh release upload "$RELEASE_TAG" portable/giji-automemo-windows-x64.zip portable/portable-SHA256SUMS.txt --clobber
