@@ -1,0 +1,35 @@
+name: Source package
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+      - name: Assemble source and built frontend
+        run: |
+          mkdir -p package/giji-automemo
+          git archive HEAD | tar -x -C package/giji-automemo
+          cp -R frontend/dist package/giji-automemo/frontend/dist
+          printf '%s\n' 'Source package, not a compiled executable.' 'Requires Windows 11 and Python 3.11 x64.' 'Run: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup.ps1 -SkipFrontend' 'Then run scripts\start.cmd.' 'Audio models and credentials are not included.' > package/giji-automemo/START-HERE.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: giji-automemo-source-${{ github.sha }}
+          path: package/
+          retention-days: 14
+          include-hidden-files: true
