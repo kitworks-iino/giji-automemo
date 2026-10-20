@@ -3256,6 +3256,257 @@ main {
   margin-top: 13px;
   font-size: 9px;
 }
+.settings-card[id] {
+  scroll-margin-top: 25px;
+}
+.calendar-source-option {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid #e3e8dc;
+  border-radius: 9px;
+  padding: 17px;
+  cursor: pointer;
+  background: #fdfefa;
+}
+.calendar-source-option.selected {
+  border-color: #bacbab;
+  background: #f4f7ee;
+}
+.calendar-source-option > input {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+  accent-color: #8caa72;
+  margin: 0;
+}
+.calendar-source-option > svg {
+  color: #8b9f78;
+  flex-shrink: 0;
+}
+.calendar-source-option > span {
+  flex: 1;
+}
+.calendar-source-option strong {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: #5c7150;
+  font-weight: 600;
+}
+.calendar-source-option small {
+  display: block;
+  margin-top: 4px;
+  font-size: 10px;
+  line-height: 1.8;
+  color: #849576;
+}
+.recommended-badge {
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 8px;
+  color: #8c9e77;
+  background: #e8efde;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.source-selected-check {
+  margin-left: auto;
+}
+.no-registration-note {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #7e9269;
+  font-size: 10px;
+  margin: 20px 0 15px;
+}
+.desktop-calendar-guide ol {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 13px;
+}
+.desktop-calendar-guide li {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+}
+.desktop-calendar-guide li > span {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: #f0f4e9;
+  color: #92a67d;
+  font-size: 10px;
+  margin-top: 1px;
+}
+.desktop-calendar-guide li p {
+  font-size: 10px;
+  color: #89977e;
+  line-height: 1.8;
+}
+.desktop-calendar-guide li strong {
+  display: block;
+  color: #697d5b;
+  font-weight: 550;
+  margin-bottom: 2px;
+}
+.compatibility-note {
+  margin-top: 17px;
+  margin-bottom: 0;
+  padding: 12px 13px;
+  background: #f8f6ed;
+  border-radius: 6px;
+  color: #9b906d;
+}
+.calendar-account {
+  font-size: 9px;
+  line-height: 1.8;
+  color: #8da17a;
+  margin-top: 12px;
+  overflow-wrap: anywhere;
+}
+.advanced-calendar {
+  border-top: 1px solid #e9eee1;
+  padding-top: 17px;
+  margin-top: 22px;
+}
+.advanced-calendar > summary {
+  cursor: pointer;
+  font-size: 10px;
+  line-height: 1.8;
+  color: #94a286;
+}
+.advanced-calendar > summary:focus-visible {
+  outline: 3px solid #d9765f55;
+  outline-offset: 4px;
+  border-radius: 3px;
+}
+.advanced-calendar[open] > summary {
+  margin-bottom: 15px;
+}
+.advanced-calendar .setting-hint {
+  margin-bottom: 13px;
+}
+.advanced-source {
+  padding: 13px;
+}
+.advanced-source strong {
+  font-size: 10px;
+}
+.advanced-source small {
+  font-size: 9px;
+}
+.graph-settings {
+  padding-top: 20px;
+}
+.device-readiness {
+  font-size: 9px;
+  line-height: 1.8;
+  color: #8b9e78;
+  margin: -4px 0 16px;
+}
+.portable-checklist h3 {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+.portable-checklist h3 > span {
+  color: #9db48a;
+  font-size: 10px;
+  white-space: nowrap;
+}
+.checklist-step {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  gap: 8px;
+  text-align: left;
+  padding: 8px 0;
+  font-size: 9px;
+  color: #849973;
+  line-height: 1.7;
+}
+.checklist-step > .check-circle {
+  flex-shrink: 0;
+}
+.checklist-step > svg {
+  margin-left: auto;
+  color: #b1c0a1;
+}
+.checklist-step:hover {
+  color: #bd7058;
+}
+@media (max-width: 1000px) {
+  .portable-checklist {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 3px 15px;
+  }
+  .portable-checklist h3 {
+    grid-column: 1 / -1;
+    margin-bottom: 6px;
+  }
+  .portable-checklist p {
+    display: block;
+    grid-column: 1 / -1;
+    margin-top: 8px;
+    padding-top: 12px;
+  }
+}
+@media (max-width: 480px) {
+  .calendar-source-option {
+    padding: 13px 10px;
+    gap: 8px;
+  }
+  .calendar-source-option > svg:not(.source-selected-check) {
+    display: none;
+  }
+  .calendar-source-option strong {
+    flex-wrap: wrap;
+    gap: 4px 7px;
+    font-size: 10px;
+  }
+  .calendar-source-option small {
+    font-size: 8px;
+  }
+  .calendar-source-option .source-selected-check {
+    width: 14px;
+  }
+  .no-registration-note {
+    align-items: flex-start;
+    font-size: 9px;
+    line-height: 1.8;
+  }
+  .desktop-calendar-guide li p {
+    font-size: 9px;
+  }
+  .portable-checklist {
+    gap: 2px 10px;
+  }
+  .checklist-step {
+    font-size: 8px;
+    gap: 6px;
+  }
+  .portable-checklist .check-circle {
+    width: 14px;
+    height: 14px;
+  }
+  .checklist-step > svg {
+    display: none;
+  }
+  .advanced-calendar > summary {
+    font-size: 9px;
+  }
+}
 @media (max-width: 480px) {
   .regenerate-area {
     flex-wrap: wrap;

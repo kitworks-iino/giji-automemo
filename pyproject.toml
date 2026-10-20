@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "giji-automemo"
-version = "0.1.0"
+version = "0.2.0"
 description = "Private-first Teams meeting recorder and Japanese meeting minutes for Windows 11"
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
@@ -21,6 +21,7 @@ dependencies = [
 
 [project.optional-dependencies]
 windows = [
+  "pywin32>=308; sys_platform == 'win32'",
   "PyAudioWPatch>=0.2.12.7,<0.3; sys_platform == 'win32'",
   "pywinauto>=0.6.9,<0.7; sys_platform == 'win32'",
   "psutil>=6,<8",

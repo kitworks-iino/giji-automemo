@@ -45,6 +45,7 @@ import {
   post,
   request,
   type Meeting,
+  type MicrosoftConnection,
   type Session,
   type Settings,
   type Snapshot,
@@ -93,6 +94,23 @@ const speakerLabel = (id: string) =>
         : id;
 const cx = (...items: (string | false | undefined)[]) =>
   items.filter(Boolean).join(" ");
+
+function calendarConnection(snapshot: Snapshot | null): MicrosoftConnection {
+  const provider = snapshot?.settings.calendar_source ?? "outlook_desktop";
+  if (snapshot?.microsoft) return snapshot.microsoft;
+  const connected =
+    provider === "graph"
+      ? !!snapshot?.settings.has_microsoft_login
+      : snapshot?.health.calendar.state === "connected";
+  return {
+    provider,
+    connected,
+    state: connected ? "connected" : "disconnected",
+    detail:
+      snapshot?.health.calendar.detail ??
+      "Outlook（クラシック）を起動し、予定を同期してください。",
+  };
+}
 
 function Status({ status }: { status: string }) {
   return (
@@ -302,10 +320,15 @@ export default function App() {
     (s) =>
       new Date(s.started_at).toDateString() === new Date(today).toDateString(),
   );
+  const microsoft = calendarConnection(snapshot);
+  const desktopCalendar = microsoft.provider === "outlook_desktop";
   const isConfigured =
-    snapshot?.settings.has_microsoft_login &&
+    microsoft.connected &&
     snapshot?.settings.has_api_key &&
-    snapshot?.health.models.ready;
+    snapshot?.health.models.ready &&
+    snapshot?.settings.recording_consent &&
+    snapshot?.settings.cloud_consent &&
+    snapshot?.settings.auto_record;
   const filteredSessions = sessions.filter((s) =>
     s.title.toLowerCase().includes(search.toLowerCase()),
   );
@@ -1051,9 +1074,11 @@ export default function App() {
                         <Sparkles size={19} />
                       </span>
                       <div>
-                        <strong>giji を、あなたの会議に。</strong>
+                        <strong>最初の準備を、ひとつずつ。</strong>
                         <p>
-                          Microsoft連携・音声モデル・APIキーを設定すると、会議の記録がひとつにつながります。
+                          {desktopCalendar
+                            ? "Outlookの起動・録音デバイス・音声モデル・LLM APIキーを確認して、自動録音を有効にしましょう。Microsoftのアプリ登録は不要です。"
+                            : "カレンダー接続・録音デバイス・音声モデル・LLM APIキーを確認して、自動録音を有効にしましょう。"}
                         </p>
                       </div>
                       <button
@@ -1088,7 +1113,9 @@ export default function App() {
                         <button
                           className="text-button muted"
                           disabled={
-                            !!busy || !snapshot?.settings.has_microsoft_login
+                            !!busy ||
+                            !snapshot ||
+                            (!desktopCalendar && !microsoft.connected)
                           }
                           onClick={() =>
                             void act(
@@ -1197,23 +1224,45 @@ export default function App() {
                             <Empty
                               icon={<CalendarDays />}
                               title={
-                                snapshot?.settings.has_microsoft_login
+                                microsoft.connected
                                   ? "本日のTeams会議はありません"
-                                  : "カレンダーをつなげましょう"
+                                  : desktopCalendar
+                                    ? "Outlookを起動して、予定を同期"
+                                    : "選択したカレンダー接続を確認"
                               }
                             >
                               <p>
-                                {snapshot?.settings.has_microsoft_login
+                                {microsoft.connected
                                   ? "予定は自動で同期されます。予定外の会議も手動で録音できます。"
-                                  : "Outlookの予定から、今日のTeams会議を自動で集めます。"}
+                                  : desktopCalendar
+                                    ? "同じWindowsユーザーでOutlook（クラシック）を開き、サインイン済みの予定表を確認してください。Microsoftのアプリ登録やAPIキーは不要です。"
+                                    : "設定・連携で、選択した接続の状態を確認してください。"}
                               </p>
-                              {!snapshot?.settings.has_microsoft_login && (
+                              {!microsoft.connected && (
                                 <button
                                   className="text-button coral-text"
-                                  onClick={() => navigate("settings")}
+                                  disabled={!!busy}
+                                  onClick={() => {
+                                    if (desktopCalendar) {
+                                      void act(
+                                        "sync",
+                                        () => post("/sync"),
+                                        "予定の同期を確認しました",
+                                      );
+                                    } else navigate("settings");
+                                  }}
                                 >
-                                  Microsoft連携を設定
-                                  <ArrowRight size={14} />
+                                  {desktopCalendar
+                                    ? "Outlookの予定を同期"
+                                    : "接続の設定を確認"}
+                                  {desktopCalendar ? (
+                                    <RefreshCw
+                                      size={14}
+                                      className={busy === "sync" ? "spin" : ""}
+                                    />
+                                  ) : (
+                                    <ArrowRight size={14} />
+                                  )}
                                 </button>
                               )}
                             </Empty>
@@ -1224,7 +1273,9 @@ export default function App() {
                         <RefreshCw size={11} />
                         {snapshot?.health.calendar.last_sync
                           ? `最終同期 ${time(snapshot.health.calendar.last_sync)} · ${snapshot.settings.sync_interval_seconds}秒ごとに自動更新`
-                          : "Outlookカレンダーから予定を取得します"}
+                          : desktopCalendar
+                            ? "このPCのOutlook（クラシック）から予定を取得します"
+                            : "選択したカレンダー接続から予定を取得します"}
                       </p>
                     </section>
                     <section className="recent-section">
@@ -1712,6 +1763,7 @@ function SettingsPage({
     loopbacks: { id: number; name: string }[];
   }>({ microphones: [], loopbacks: [] });
   const [deviceError, setDeviceError] = useState("");
+  const [devicesLoaded, setDevicesLoaded] = useState(false);
   const [login, setLogin] = useState<{
     user_code: string;
     verification_uri: string;
@@ -1719,15 +1771,24 @@ function SettingsPage({
   } | null>(null);
   const [dirty, setDirty] = useState(false);
   useEffect(() => {
-    if (snapshot && !draft) setDraft({ ...snapshot.settings, api_key: "" });
+    if (snapshot && !draft)
+      setDraft({
+        ...snapshot.settings,
+        calendar_source: snapshot.settings.calendar_source ?? "outlook_desktop",
+        api_key: "",
+      });
   }, [snapshot, draft]);
   const loadDevices = useCallback(() => {
     request<typeof devices>("/devices")
       .then((data) => {
         setDevices(data);
         setDeviceError("");
+        setDevicesLoaded(true);
       })
-      .catch((e) => setDeviceError((e as Error).message));
+      .catch((e) => {
+        setDeviceError((e as Error).message);
+        setDevicesLoaded(true);
+      });
   }, []);
   useEffect(() => {
     loadDevices();
@@ -1735,6 +1796,21 @@ function SettingsPage({
   useEffect(() => {
     if (snapshot?.settings.has_microsoft_login) setLogin(null);
   }, [snapshot?.settings.has_microsoft_login]);
+  const microsoft = calendarConnection(snapshot);
+  const microphoneReady =
+    devicesLoaded &&
+    !deviceError &&
+    devices.microphones.length > 0 &&
+    (snapshot?.settings.microphone_id == null ||
+      devices.microphones.some(
+        (d) => d.id === snapshot.settings.microphone_id,
+      ));
+  const outputReady =
+    devicesLoaded &&
+    !deviceError &&
+    devices.loopbacks.length > 0 &&
+    (snapshot?.settings.loopback_id == null ||
+      devices.loopbacks.some((d) => d.id === snapshot.settings.loopback_id));
   if (!draft || !snapshot)
     return (
       <div className="loading-state">
@@ -1742,6 +1818,50 @@ function SettingsPage({
         設定を読み込んでいます
       </div>
     );
+  const selectedModelsReady =
+    snapshot.health.models.ready &&
+    draft.whisper_model === snapshot.settings.whisper_model &&
+    draft.diarization === snapshot.settings.diarization;
+  const setupSteps = [
+    {
+      label:
+        microsoft.provider === "outlook_desktop"
+          ? "Outlook・予定表を検出"
+          : "Graphカレンダーに接続",
+      ready: microsoft.connected,
+      section: "calendar-settings",
+    },
+    {
+      label: "マイク・出力デバイスを検出",
+      ready: microphoneReady && outputReady,
+      section: "audio-settings",
+    },
+    {
+      label: "音声モデルの準備",
+      ready: snapshot.health.models.ready,
+      section: "model-settings",
+    },
+    {
+      label: "LLM APIキーを登録",
+      ready: snapshot.settings.has_api_key,
+      section: "llm-settings",
+    },
+    {
+      label: "録音の周知・同意",
+      ready: snapshot.settings.recording_consent,
+      section: "audio-settings",
+    },
+    {
+      label: "AIへの送信に同意",
+      ready: snapshot.settings.cloud_consent,
+      section: "llm-settings",
+    },
+    {
+      label: "自動録音を有効化",
+      ready: snapshot.settings.auto_record,
+      section: "audio-settings",
+    },
+  ];
   function update<K extends keyof Settings>(name: K, value: Settings[K]) {
     setDraft((d) => (d ? { ...d, [name]: value } : d));
     setDirty(true);
@@ -1764,7 +1884,11 @@ function SettingsPage({
       "設定を保存しました",
     );
     if (result) {
-      setDraft({ ...result, api_key: "" });
+      setDraft({
+        ...result,
+        calendar_source: result.calendar_source ?? "outlook_desktop",
+        api_key: "",
+      });
       setDirty(false);
       return true;
     }
@@ -1778,7 +1902,7 @@ function SettingsPage({
           <h1>
             設定・連携<span className="heading-dot">.</span>
           </h1>
-          <p>一度つなげたら、あとは会話に集中するだけ。</p>
+          <p>このPCのOutlookとTeamsを使って、会議の記録を始めましょう。</p>
         </div>
         <button
           className="button primary"
@@ -1798,113 +1922,240 @@ function SettingsPage({
       )}
       <div className="settings-layout">
         <div className="settings-main">
-          <section className="content-card settings-card">
+          <section
+            id="calendar-settings"
+            className="content-card settings-card calendar-settings"
+          >
             <div className="settings-heading">
               <span className="settings-section-icon purple">
                 <CalendarDays size={23} />
               </span>
               <div>
-                <h2>Microsoft 365 とつなぐ</h2>
-                <p>Outlookカレンダーから、今日のTeams会議を自動取得。</p>
+                <h2>このPCの予定表から、会議を取得</h2>
+                <p>OutlookにあるTeams会議を、自動でホームに集めます。</p>
               </div>
               <span
                 className={cx(
                   "connection-pill",
-                  snapshot.settings.has_microsoft_login && "connected",
+                  microsoft.connected && "connected",
                 )}
               >
-                {snapshot.settings.has_microsoft_login ? "接続済み" : "未接続"}
+                {microsoft.connected
+                  ? "検出済み"
+                  : microsoft.state === "error"
+                    ? "要確認"
+                    : "確認待ち"}
               </span>
             </div>
-            <p className="setting-hint">
-              最初に無料のMicrosoft
-              Entraアプリ登録が必要です。組織の設定によって管理者の許可が必要になる場合があります。
-              <a
-                href="https://github.com/kitworks-iino/giji-automemo/blob/main/docs/microsoft-setup.md"
-                target="_blank"
-                rel="noreferrer"
-              >
-                セットアップ手順
-                <ExternalLink size={12} />
-              </a>
-            </p>
-            <div className="field-grid">
-              <label className="field">
-                <span>アプリケーション（クライアント）ID</span>
-                <input
-                  placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-                  value={draft.client_id}
-                  onChange={(e) => update("client_id", e.target.value)}
-                  autoComplete="off"
-                />
-              </label>
-              <label className="field">
-                <span>テナントID</span>
-                <input
-                  placeholder="organizations"
-                  value={draft.tenant_id}
-                  onChange={(e) => update("tenant_id", e.target.value)}
-                  autoComplete="off"
-                />
-              </label>
-            </div>
-            <div className="connection-actions">
-              {snapshot.settings.has_microsoft_login ? (
-                <button
-                  className="button secondary"
-                  disabled={!!busy}
-                  onClick={() =>
-                    void act(
-                      "logout",
-                      () => post("/auth/logout"),
-                      "Microsoft連携を解除しました",
-                    )
-                  }
-                >
-                  連携を解除
-                </button>
-              ) : (
-                <button
-                  className="button secondary"
-                  disabled={!!busy || !draft.client_id}
-                  onClick={async () => {
-                    if (dirty && !(await save())) return;
-                    const result = await act<typeof login>("login", () =>
-                      post("/auth/login"),
-                    );
-                    if (result) setLogin(result);
-                  }}
-                >
-                  <span className="microsoft-mark">
-                    <i />
-                    <i />
-                    <i />
-                    <i />
-                  </span>
-                  Microsoft にサインイン
-                  <ExternalLink size={14} />
-                </button>
+            <label
+              className={cx(
+                "calendar-source-option",
+                draft.calendar_source === "outlook_desktop" && "selected",
               )}
-              <span className="muted">{snapshot.health.calendar.detail}</span>
-            </div>
-            {login && (
-              <div className="login-code">
-                <strong>ブラウザーでこのコードを入力してください</strong>
-                <code>{login.user_code}</code>
-                <a
-                  className="button secondary small"
-                  href={login.verification_uri}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  Microsoft の認証ページを開く
-                  <ExternalLink size={13} />
-                </a>
-                <p>サインインの完了を自動で確認しています。</p>
+            >
+              <input
+                type="radio"
+                name="calendar-source"
+                value="outlook_desktop"
+                checked={draft.calendar_source === "outlook_desktop"}
+                onChange={() => {
+                  update("calendar_source", "outlook_desktop");
+                  setLogin(null);
+                }}
+              />
+              <Monitor size={23} />
+              <span>
+                <strong>
+                  Outlook デスクトップ
+                  <span className="recommended-badge">おすすめ</span>
+                </strong>
+                <small>
+                  Outlook（クラシック）の予定表を、このPCから読み取ります。
+                </small>
+              </span>
+              {draft.calendar_source === "outlook_desktop" && (
+                <Check size={18} className="source-selected-check" />
+              )}
+            </label>
+            {draft.calendar_source === "outlook_desktop" && (
+              <div className="desktop-calendar-guide">
+                <div className="no-registration-note">
+                  <ShieldCheck size={16} />
+                  <span>Microsoftのアプリ登録・APIキーは不要です。</span>
+                </div>
+                <ol>
+                  <li>
+                    <span>1</span>
+                    <p>
+                      <strong>Outlook（クラシック）を起動</strong>giji
+                      と同じWindowsユーザーで開いてください。
+                    </p>
+                  </li>
+                  <li>
+                    <span>2</span>
+                    <p>
+                      <strong>いつもの予定表を確認</strong>
+                      Outlookでサインインし、Teams会議が予定表に表示されていることを確認します。
+                    </p>
+                  </li>
+                  <li>
+                    <span>3</span>
+                    <p>
+                      <strong>予定を同期</strong>
+                      以降はgijiの起動中に自動で更新します。
+                    </p>
+                  </li>
+                </ol>
+                <div className="connection-actions">
+                  <button
+                    className="button secondary"
+                    disabled={!!busy}
+                    onClick={async () => {
+                      if (dirty && !(await save())) return;
+                      await act(
+                        "sync",
+                        () => post("/sync"),
+                        "Outlookの予定の同期を確認しました",
+                      );
+                    }}
+                  >
+                    <RefreshCw
+                      size={15}
+                      className={busy === "sync" ? "spin" : ""}
+                    />
+                    Outlookの予定を同期
+                  </button>
+                  <span className="muted">
+                    {microsoft.provider === "outlook_desktop"
+                      ? microsoft.detail
+                      : "保存してOutlookの予定取得に切り替えます。"}
+                  </span>
+                </div>
+                {microsoft.provider === "outlook_desktop" &&
+                  microsoft.account && (
+                    <p className="calendar-account">
+                      使用中のアカウント：{microsoft.account}
+                    </p>
+                  )}
+                <p className="setting-hint compatibility-note">
+                  「新しいOutlook」やブラウザー版のOutlookには対応していません。Outlook（クラシック）を使用してください。
+                </p>
               </div>
             )}
+            <details
+              className="advanced-calendar"
+              open={draft.calendar_source === "graph" ? true : undefined}
+            >
+              <summary>詳細設定：別のカレンダー接続を使う</summary>
+              <p className="setting-hint">
+                組織で既存のMicrosoft
+                Graph接続が用意されている場合だけ利用する、任意の設定です。通常はOutlookデスクトップのままで使用できます。
+              </p>
+              <label
+                className={cx(
+                  "calendar-source-option advanced-source",
+                  draft.calendar_source === "graph" && "selected",
+                )}
+              >
+                <input
+                  type="radio"
+                  name="calendar-source"
+                  value="graph"
+                  checked={draft.calendar_source === "graph"}
+                  onChange={() => update("calendar_source", "graph")}
+                />
+                <Cloud size={20} />
+                <span>
+                  <strong>Microsoft Graph（既存の接続）</strong>
+                  <small>利用を許可されたクライアントIDを持つ場合のみ。</small>
+                </span>
+              </label>
+              {draft.calendar_source === "graph" && (
+                <div className="graph-settings">
+                  <div className="field-grid">
+                    <label className="field">
+                      <span>アプリケーション（クライアント）ID</span>
+                      <input
+                        placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+                        value={draft.client_id}
+                        onChange={(e) => update("client_id", e.target.value)}
+                        autoComplete="off"
+                      />
+                    </label>
+                    <label className="field">
+                      <span>テナントID</span>
+                      <input
+                        placeholder="organizations"
+                        value={draft.tenant_id}
+                        onChange={(e) => update("tenant_id", e.target.value)}
+                        autoComplete="off"
+                      />
+                    </label>
+                  </div>
+                  <div className="connection-actions">
+                    {microsoft.provider === "graph" && microsoft.connected ? (
+                      <button
+                        className="button secondary"
+                        disabled={!!busy}
+                        onClick={() =>
+                          void act(
+                            "logout",
+                            () => post("/auth/logout"),
+                            "Microsoft Graphの接続を解除しました",
+                          )
+                        }
+                      >
+                        Graphの接続を解除
+                      </button>
+                    ) : (
+                      <button
+                        className="button secondary"
+                        disabled={!!busy || !draft.client_id}
+                        onClick={async () => {
+                          if (dirty && !(await save())) return;
+                          const result = await act<typeof login>("login", () =>
+                            post("/auth/login"),
+                          );
+                          if (result) setLogin(result);
+                        }}
+                      >
+                        <span className="microsoft-mark">
+                          <i />
+                          <i />
+                          <i />
+                          <i />
+                        </span>
+                        Microsoft にサインイン
+                        <ExternalLink size={14} />
+                      </button>
+                    )}
+                    <span className="muted">
+                      {microsoft.provider === "graph"
+                        ? microsoft.detail
+                        : "保存してGraph接続に切り替えます。"}
+                    </span>
+                  </div>
+                  {login && (
+                    <div className="login-code">
+                      <strong>ブラウザーでこのコードを入力してください</strong>
+                      <code>{login.user_code}</code>
+                      <a
+                        className="button secondary small"
+                        href={login.verification_uri}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        Microsoft の認証ページを開く
+                        <ExternalLink size={13} />
+                      </a>
+                      <p>サインインの完了を自動で確認しています。</p>
+                    </div>
+                  )}
+                </div>
+              )}
+            </details>
           </section>
-          <section className="content-card settings-card">
+          <section id="audio-settings" className="content-card settings-card">
             <div className="settings-heading">
               <span className="settings-section-icon peach">
                 <Mic size={23} />
@@ -1964,6 +2215,13 @@ function SettingsPage({
               </button>
             </div>
             {deviceError && <p className="field-error">{deviceError}</p>}
+            {!deviceError && (
+              <p className="device-readiness">
+                {devicesLoaded
+                  ? `${microphoneReady ? "マイクを検出済み" : "マイクを確認してください"} · ${outputReady ? "出力デバイスを検出済み" : "出力デバイスを確認してください"}`
+                  : "このPCの録音デバイスを確認しています…"}
+              </p>
+            )}
             <Toggle
               checked={draft.recording_consent}
               onChange={(v) => update("recording_consent", v)}
@@ -2008,14 +2266,14 @@ function SettingsPage({
               <span>{snapshot.health.teams.detail}</span>
             </div>
           </section>
-          <section className="content-card settings-card">
+          <section id="model-settings" className="content-card settings-card">
             <div className="settings-heading">
               <span className="settings-section-icon sage">
                 <AudioLines size={23} />
               </span>
               <div>
                 <h2>ローカル文字起こし・話者分離</h2>
-                <p>音声をクラウドに送信せず、PC内で処理します。</p>
+                <p>同梱の音声モデルを使い、音声をPC内で処理します。</p>
               </div>
             </div>
             <div className="field-grid">
@@ -2053,20 +2311,22 @@ function SettingsPage({
               <div>
                 <strong>
                   <span
-                    className={cx(
-                      "tiny-dot",
-                      snapshot.health.models.ready && "green",
-                    )}
+                    className={cx("tiny-dot", selectedModelsReady && "green")}
                   />
-                  {snapshot.health.models.ready
-                    ? "モデルの準備ができています"
-                    : "音声モデルの準備"}
+                  {selectedModelsReady
+                    ? "音声モデルは準備済みです"
+                    : "選択した音声モデルの準備が必要です"}
                 </strong>
-                <p>{snapshot.health.models.detail}</p>
+                <p>
+                  {draft.whisper_model === snapshot.settings.whisper_model &&
+                  draft.diarization === snapshot.settings.diarization
+                    ? snapshot.health.models.detail
+                    : "設定を保存してから、選択したモデルを準備します。"}
+                </p>
               </div>
               <button
                 className="button secondary small"
-                disabled={!!busy}
+                disabled={!!busy || selectedModelsReady}
                 onClick={async () => {
                   if (dirty && !(await save())) return;
                   await act(
@@ -2076,15 +2336,19 @@ function SettingsPage({
                   );
                 }}
               >
-                <ArrowDownToLine size={15} />
-                モデルを準備
+                {selectedModelsReady ? (
+                  <Check size={15} />
+                ) : (
+                  <ArrowDownToLine size={15} />
+                )}
+                {selectedModelsReady ? "準備済み" : "モデルを準備"}
               </button>
             </div>
             <p className="setting-hint">
-              初回はモデルをダウンロードします。空き容量と通信環境を確認してください。
+              モデル同梱版では「準備済み」なら追加ダウンロードは不要です。別のモデルを選ぶ場合やファイルが不足する場合だけ、モデルを準備してください。
             </p>
           </section>
-          <section className="content-card settings-card">
+          <section id="llm-settings" className="content-card settings-card">
             <div className="settings-heading">
               <span className="settings-section-icon peach">
                 <Sparkles size={23} />
@@ -2096,7 +2360,7 @@ function SettingsPage({
             </div>
             <label className="field">
               <span>
-                APIキー
+                議事録生成用のLLM APIキー
                 <span className="field-label-note">
                   {snapshot.settings.has_api_key
                     ? "登録済み · 変更時のみ入力"
@@ -2114,7 +2378,9 @@ function SettingsPage({
                 value={draft.api_key ?? ""}
                 onChange={(e) => update("api_key", e.target.value)}
               />
-              <small>Windowsの資格情報マネージャーに安全に保存します。</small>
+              <small>
+                お持ちのLLMサービスのキーを入力してください。Microsoft用のキーではありません。Windowsの資格情報マネージャーに保存します。
+              </small>
             </label>
             <div className="field-grid">
               <label className="field">
@@ -2178,23 +2444,34 @@ function SettingsPage({
           </section>
         </div>
         <aside className="settings-aside">
-          <div className="content-card setup-checklist">
-            <h3>準備できていますか？</h3>
-            {[
-              ["Microsoft連携", snapshot.settings.has_microsoft_login],
-              ["録音の周知・同意", snapshot.settings.recording_consent],
-              ["音声モデル", snapshot.health.models.ready],
-              ["APIキー", snapshot.settings.has_api_key],
-              ["AIへの送信に同意", snapshot.settings.cloud_consent],
-            ].map(([label, ready]) => (
-              <div key={label as string}>
+          <div className="content-card setup-checklist portable-checklist">
+            <h3>
+              初回チェックリスト{" "}
+              <span>
+                {setupSteps.filter((step) => step.ready).length} /{" "}
+                {setupSteps.length}
+              </span>
+            </h3>
+            {setupSteps.map(({ label, ready, section }) => (
+              <button
+                className="checklist-step"
+                key={label}
+                onClick={() =>
+                  document
+                    .getElementById(section)
+                    ?.scrollIntoView({ behavior: "smooth", block: "start" })
+                }
+              >
                 <span className={ready ? "check-circle done" : "check-circle"}>
                   {ready ? <Check size={12} /> : ""}
                 </span>
-                {label}
-              </div>
+                <span>{label}</span>
+                <ChevronRight size={11} />
+              </button>
             ))}
-            <p>アプリを起動したまま、いつものTeams会議へ。</p>
+            <p>
+              準備ができたら短い会議で、両方の音声と退出時の停止を確認してください。ここには現在の設定・検出状況を表示しています。
+            </p>
           </div>
           <div className="settings-info">
             <ShieldCheck size={23} />

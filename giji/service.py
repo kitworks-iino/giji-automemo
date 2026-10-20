@@ -29,14 +29,14 @@ class GijiService:
     def __init__(self, store: Store, secrets: Secrets | None = None, *, calendar=None,
                  detector=None, recorder=None, models=None, pipeline=None):
         from .audio import AudioRecorder
-        from .microsoft import MicrosoftCalendar
+        from .calendar import CalendarRouter
         from .models import ModelManager
         from .pipeline import Pipeline
         from .teams import TeamsDetector
 
         self.store = store
         self.secrets = secrets or Secrets()
-        self.calendar = calendar or MicrosoftCalendar(self.secrets)
+        self.calendar = calendar or CalendarRouter(self.secrets, self.store.settings)
         self.detector = detector or TeamsDetector()
         self.recorder = recorder or AudioRecorder()
         self.models = models or ModelManager(store.data_dir)
@@ -46,6 +46,7 @@ class GijiService:
         self.armed_id: str | None = None
         self.tasks: list[asyncio.Task] = []
         self.login_task: asyncio.Task | None = None
+        self.login_generation = 0
         self.model_task: asyncio.Task | None = None
         self.queue: asyncio.Queue[str] = asyncio.Queue()
         self.pending: set[str] = set()
@@ -55,13 +56,17 @@ class GijiService:
         self.health = {
             "platform": platform.system(),
             "teams": {"state": "unknown", "detail": "Teamsを確認しています"},
-            "calendar": {"state": "disconnected", "detail": "Microsoftアカウントを接続してください", "last_sync": None},
+            "calendar": {"state": "disconnected", "detail": "Outlookデスクトップの予定を確認しています", "last_sync": None},
             "pipeline": {"state": "idle", "detail": "待機中"},
             "warnings": [],
         }
         self.model_progress: dict | None = None
 
     async def start(self):
+        # v0.1 caches have no provider/profile provenance. Reacquire calendar
+        # data each launch so old Graph/account events cannot be relabelled as
+        # desktop events or silently matched to a new recording.
+        self.store.replace_meetings([])
         # Never silently lose an interrupted recording or issue a second LLM call
         # after an unclean shutdown. The user can explicitly retry these jobs.
         for s in self.store.sessions():
@@ -76,7 +81,10 @@ class GijiService:
 
     async def close(self):
         self.stop_event.set()
+        self.login_generation += 1
         self.calendar.cancel_login()
+        if hasattr(self.calendar, "close"):
+            self.calendar.close()
         if hasattr(self.detector, "close"):
             self.detector.close()
         if self.active_id:
@@ -100,7 +108,8 @@ class GijiService:
     def public_settings(self) -> dict:
         return {**self.store.settings(),
                 "has_api_key": bool(self.secrets.get("llm_api_key")),
-                "has_microsoft_login": self.calendar.is_connected()}
+                "has_microsoft_login": self.store.settings()["calendar_source"] == "graph"
+                    and self.calendar.is_connected()}
 
     def snapshot(self) -> dict:
         health = copy.deepcopy(self.health)
@@ -108,14 +117,49 @@ class GijiService:
         health["recording"] = (
             {**self.recorder.status(), "session_id": self.active_id} if self.active_id else None
         )
-        return {"meetings": self.store.meetings(),
+        connection = {
+            "provider": self.store.settings()["calendar_source"],
+            "state": health["calendar"]["state"],
+            "connected": health["calendar"]["state"] == "connected"
+                or (health["calendar"]["state"] == "syncing" and bool(health["calendar"]["last_sync"])),
+            "detail": health["calendar"]["detail"],
+        }
+        return {"meetings": self.today_meetings(), "microsoft": connection,
                 "sessions": [public_session(s, compact=True) for s in self.store.sessions()],
                 "settings": self.public_settings(), "health": health, "now": utcnow()}
+
+    def today_meetings(self, now: datetime | None = None) -> list[dict]:
+        from .desktop_calendar import local_day_bounds
+
+        start, end = local_day_bounds(now)
+        meetings = []
+        for meeting in self.store.meetings():
+            try:
+                begins = datetime.fromisoformat(meeting["start"])
+                ends = datetime.fromisoformat(meeting["end"])
+                if begins.tzinfo and ends.tzinfo and begins < end and ends > start:
+                    meetings.append(meeting)
+            except (KeyError, TypeError, ValueError):
+                continue
+        return meetings
+
+    def matchable_meetings(self) -> list[dict]:
+        if self.armed_id:
+            # An explicit card selection may use today's cache during an outage.
+            return self.today_meetings()
+        calendar = self.health["calendar"]
+        if calendar["state"] not in {"connected", "syncing"} or not calendar["last_sync"]:
+            return []
+        synced = datetime.fromisoformat(calendar["last_sync"]).astimezone()
+        if synced.date() != datetime.now().astimezone().date():
+            return []
+        return self.today_meetings()
 
     async def update_settings(self, patch: dict):
         patch = dict(patch)
         secret = patch.pop("api_key", None)
-        settings = {**self.store.settings(), **patch}
+        previous = self.store.settings()
+        settings = {**previous, **patch}
         if settings["auto_record"] and not settings["recording_consent"]:
             raise ValueError("自動録音を有効にするには録音への同意を設定してください。")
         if secret is not None:
@@ -123,49 +167,75 @@ class GijiService:
                 self.secrets.set("llm_api_key", secret.strip())
             else:
                 self.secrets.delete("llm_api_key")
-        if (patch.get("client_id", settings["client_id"]) != self.store.settings()["client_id"]
-                or patch.get("tenant_id", settings["tenant_id"]) != self.store.settings()["tenant_id"]):
+        source_changed = settings["calendar_source"] != previous["calendar_source"]
+        account_changed = (settings["client_id"], settings["tenant_id"]) != (
+            previous["client_id"], previous["tenant_id"])
+        if source_changed or account_changed:
+            self.login_generation += 1
             self.calendar.cancel_login()
             async with self.sync_lock:
-                await asyncio.to_thread(self.calendar.logout)
+                if account_changed:
+                    await asyncio.to_thread(self.calendar.logout)
                 self.store.replace_meetings([])
-                self.health["calendar"] = {"state": "disconnected", "detail": "Microsoftアカウントを接続してください", "last_sync": None}
-        self.store.update_settings(patch)
+                self.health["calendar"] = {
+                    "state": "disconnected", "last_sync": None,
+                    "detail": ("Outlookを起動して予定を同期してください"
+                               if settings["calendar_source"] == "outlook_desktop"
+                               else "Microsoftアカウントを接続してください"),
+                }
+                self.store.update_settings(patch)
+        else:
+            self.store.update_settings(patch)
         return self.public_settings()
 
     async def sync(self):
+        from .microsoft import CalendarError
+
         async with self.sync_lock:
-            if not self.calendar.is_connected():
+            settings = self.store.settings()
+            if settings["calendar_source"] == "graph" and not self.calendar.is_connected():
                 self.health["calendar"].update(state="disconnected", detail="Microsoftアカウントを接続してください")
                 return
             self.health["calendar"].update(state="syncing", detail="今日の予定を同期中")
             try:
-                meetings = await asyncio.to_thread(self.calendar.fetch_today, self.store.settings())
+                meetings = await asyncio.to_thread(self.calendar.fetch_today, settings)
                 self.store.replace_meetings(meetings)
                 self.health["calendar"] = {"state": "connected", "detail": "同期済み", "last_sync": utcnow()}
+            except CalendarError as exc:
+                self.health["calendar"].update(state="error", detail=str(exc))
             except Exception:
                 self.health["calendar"].update(
-                    state="error", detail="予定を同期できません。接続とMicrosoftの権限を確認し、必要なら再接続してください。")
+                    state="error", detail=(
+                        "予定を同期できません。従来版Outlookを起動し、同じWindowsユーザーでやり直してください。"
+                        if settings["calendar_source"] == "outlook_desktop"
+                        else "予定を同期できません。接続とMicrosoftの権限を確認し、必要なら再接続してください。"))
 
     async def login(self) -> dict:
+        if self.store.settings()["calendar_source"] != "graph":
+            raise ValueError("Outlookデスクトップ連携ではサインイン不要です。予定を同期してください。")
         if self.login_task and not self.login_task.done():
             raise ValueError("Microsoftサインインを処理中です。画面のコードで認証してください。")
         details = await asyncio.to_thread(self.calendar.begin_login, self.store.settings())
         self.health["calendar"].update(state="authenticating", detail="ブラウザーで認証してください")
-        self.login_task = asyncio.create_task(self._complete_login())
+        self.login_generation += 1
+        self.login_task = asyncio.create_task(self._complete_login(self.login_generation))
         return details
 
-    async def _complete_login(self):
+    async def _complete_login(self, generation: int):
         try:
             success = await asyncio.to_thread(self.calendar.complete_login)
+            if generation != self.login_generation:
+                return
             if success:
                 await self.sync()
             else:
                 self.health["calendar"].update(state="disconnected", detail="サインインが完了しませんでした。再度接続してください。")
         except Exception:
-            self.health["calendar"].update(state="error", detail="Microsoft認証に失敗しました。アプリ登録と組織の許可を確認してください。")
+            if generation == self.login_generation:
+                self.health["calendar"].update(state="error", detail="Microsoft認証に失敗しました。アプリ登録と組織の許可を確認してください。")
 
     async def logout(self):
+        self.login_generation += 1
         self.calendar.cancel_login()
         # Let any current sync finish before clearing private calendar data.
         async with self.sync_lock:
@@ -283,7 +353,7 @@ class GijiService:
                     time.monotonic(), settings["end_grace_seconds"],
                 )
                 if action == "start":
-                    meeting = match_meeting(self.store.meetings(), datetime.now(timezone.utc), self.armed_id)
+                    meeting = match_meeting(self.matchable_meetings(), datetime.now(timezone.utc), self.armed_id)
                     try:
                         await self.start_recording(meeting["id"] if meeting else None, source="automatic")
                     except ValueError as exc:

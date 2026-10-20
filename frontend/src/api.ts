@@ -95,6 +95,7 @@ export type Session = {
   audio_urls?: { microphone?: string; system?: string };
 };
 export type Settings = {
+  calendar_source: "outlook_desktop" | "graph";
   client_id: string;
   tenant_id: string;
   auto_record: boolean;
@@ -112,6 +113,19 @@ export type Settings = {
   has_api_key: boolean;
   has_microsoft_login: boolean;
   api_key?: string;
+};
+export type MicrosoftConnection = {
+  state:
+    | "connected"
+    | "disconnected"
+    | "error"
+    | "unconfigured"
+    | "syncing"
+    | "authenticating";
+  provider: "outlook_desktop" | "graph";
+  connected: boolean;
+  detail: string;
+  account?: string | null;
 };
 export type Health = {
   platform: string;
@@ -131,6 +145,7 @@ export type Snapshot = {
   meetings: Meeting[];
   sessions: Session[];
   settings: Settings;
+  microsoft?: MicrosoftConnection;
   health: Health;
   now: string;
 };

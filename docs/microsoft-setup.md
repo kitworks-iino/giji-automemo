@@ -1,52 +1,61 @@
-# Microsoft連携の設定
+# Outlook連携の設定
 
-Outlookの「今日の予定」からTeams会議を取得します。Teams側の会議リストを直接列挙する方式より、参加者として招待された会議や繰り返し予定を扱いやすいため、この方式を採用しています。
+標準設定は、このPCにある **Outlook（クラシック）** の予定表を読み取る方式です。**Microsoft Entraへのアプリ登録、クライアントID、テナントID、Microsoft用APIキーは不要です。** 普段使っているOutlookのプロファイルを利用します。
 
-予定を取得するアカウントは、Outlook予定表とTeamsを普段利用している職場/学校アカウントを想定しています。既存のMicrosoft 365利用権が必要な場合があります。このアプリのためにAzureの有料サーバーを契約する必要はありません。
+## 最初に確認すること
 
-## 1. Entraにアプリを登録
+1. Outlook（クラシック）を起動し、いつものアカウントでサインインします。
+2. そのOutlookの既定の予定表に、今日のTeams会議が表示されていることを確認します。
+3. Giji AutoMemoをOutlookと同じWindowsユーザーで起動します。
+4. 設定の予定連携で **Outlook デスクトップ** を選び、**Outlookの予定を同期** を押します。
+5. 接続状態とホームの会議一覧を確認します。以後はアプリ起動中、標準60秒ごとに同期します。
 
-1. [Microsoft Entra管理センター](https://entra.microsoft.com/)に、利用する組織のアカウントでサインイン。
-2. **アプリの登録 → 新規登録** を開く。
-3. 名前を `Giji AutoMemo` にする。
-4. 自分の組織のみで使う場合は **この組織ディレクトリのみに含まれるアカウント** を選択する。
-5. リダイレクトURIを入力せず登録する。今回はデバイスコードフローを使用する。
-6. 概要の **アプリケーション (クライアント) ID** と **ディレクトリ (テナント) ID** を控える。
+LLM APIキーは議事録生成用であり、Outlookの予定取得には使いません。アプリがOutlookのパスワードやアクセストークンを抽出することもありません。
 
-アプリ登録が禁止されている場合は、組織の管理者に登録を依頼してください。このリポジトリには全利用者共通のクライアントIDを埋め込んでいません。
+## 対応するOutlookと予定表
 
-## 2. パブリッククライアントを有効にする
+**「新しいOutlook」やブラウザー版Outlookは、このデスクトップ連携の対象外です。** クラシック版のOutlook Object Modelを使うため、PCにOutlookが入っているだけでなく、クラシック版でプロファイルが利用できる必要があります。Outlookを開いて予定を確認できる状態にしてから同期してください。
 
-登録したアプリの **認証 → 詳細設定 → パブリッククライアントフローを許可する** を **はい** にして保存します。デバイスコードフローはクライアントシークレットを必要としません。クライアントシークレットを作成したり、アプリへ入力したりする必要はありません。[Microsoft公式設定手順](https://learn.microsoft.com/en-us/entra/identity-platform/scenario-desktop-app-configuration)
+取得対象は、既定予定表の当日に重なるTeams会議です。繰り返し予定を各回に展開し、Windowsのローカル日付を基準に取得します。別アカウント・共有予定表・グループ予定表だけにある会議は表示されない場合があります。チャネル会議が個人予定表に入る条件も通常の招待と異なります。[Teamsの予定表とチャネル会議](https://support.microsoft.com/en-us/teams/meetings/see-all-your-meetings-in-microsoft-teams)
 
-## 3. Microsoft Graphの権限を設定
+Outlookがオフラインの場合、見えるのはOutlookが保持している予定です。最新の変更を反映するにはOutlook側の同期も必要です。
 
-**APIのアクセス許可 → アクセス許可の追加 → Microsoft Graph → 委任されたアクセス許可** から、`Calendars.ReadBasic` を追加します。管理者による同意が必要と表示された場合は、管理者に依頼してください。
+## 読み取りの確認やエラーが出たとき
 
-このアプリは予定の基本情報とTeams参加URLを読みます。予定の作成・変更、メール送信、会議録音のダウンロード権限は要求しません。Microsoftの認証ライブラリがサインインやトークン更新に必要な標準スコープを追加する場合があります。
+Outlookは、外部アプリによる本文・主催者・参加者情報などの読み取りをObject Model Guardで保護しています。端末や組織の設定により確認画面が表示されたり、読み取りが拒否されたりすることがあります。アプリは保護設定や組織のポリシーを変更しません。[Microsoftの保護対象一覧](https://learn.microsoft.com/en-us/office/vba/outlook/how-to/security/protected-properties-and-methods)
 
-`calendarView` の最小権限は `Calendars.ReadBasic` です。組織のユーザー同意ポリシーにより、この権限でも管理者承認が必要な場合があります。[calendarViewの公式権限表](https://learn.microsoft.com/en-us/graph/api/calendar-list-calendarview?view=graph-rest-1.0)
-
-## 4. アプリからサインイン
-
-1. Giji AutoMemoの設定に、クライアントIDとテナントIDを入力して保存。
-2. Microsoft連携のサインイン操作を実行。
-3. 表示されたMicrosoftの認証ページを開き、画面のコードを入力。
-4. 予定表にアクセスしたいアカウントを選び、許可内容を確認してサインイン。
-5. アプリに戻り、同期状態と今日の会議を確認。
-
-組織専用アプリではテナントIDに実際のIDを設定してください。`organizations` は複数組織向け登録に用いる値で、組織専用登録の代わりにはなりません。
-
-## 会議が表示されないとき
+予定取得は別の補助プロセスで実行します。Outlookの応答待ちが長くてもアプリ全体を停止させず、同期状態に問題を表示します。確認画面が出ている場合は内容を確認し、組織の運用に従って対応してください。
 
 | 状況 | 確認点 |
 | --- | --- |
-| サインインに失敗する | IDの取り違え、パブリッククライアント設定、管理者同意、デバイスコードフローの制限 |
-| 会議が0件 | サインインしたアカウント、今日の日付、Windowsのタイムゾーン、Outlookの既定予定表 |
-| 特定の会議のみ出ない | Teamsオンライン会議として設定された予定か、取消済みか、別の予定表か |
-| 通常の予定はあるが出ない | Teams参加情報を持つ会議が対象。メール本文にURLを書いただけの予定は対象外の場合あり |
-| 同期が止まる | ネット接続、条件付きアクセス、再認証の要求、Graphの制限。画面の同期エラーを確認 |
+| Outlookを検出できない | クラシック版がインストール・起動されているか。同じWindowsユーザーで起動しているか |
+| 「新しいOutlook」だけを使っている | 標準の連携対象外。クラシック版を利用できるか確認 |
+| 同期が応答待ち・失敗になる | Outlookのサインイン、プロファイル選択、読み取り確認の画面が開いていないか |
+| 会議が0件 | Windowsの日付・タイムゾーン、Outlookの既定予定表、当日のTeams会議があるか |
+| 特定の会議だけ出ない | 別の予定表・別アカウントか、取消済みか、有効なTeams参加情報があるか |
+| 変更が反映されない | Outlookが最新情報を受信しているか。アプリの同期エラーや最終同期時刻も確認 |
+| 組織の設定で拒否される | 管理者へ確認。アプリから制限を解除する機能はない |
 
-`calendarView` は時間範囲内の繰り返し予定を各回に展開します。参加URLはイベントの `onlineMeeting.joinUrl` を使用します。[Outlookオンライン会議の仕様](https://learn.microsoft.com/en-us/graph/outlook-calendar-online-meetings)
+予定を取得できなくても、録音デバイスと録音の同意を設定すれば手動録音は利用できます。
 
-このアプリはTeamsの管理ポリシーや条件付きアクセスを変更しません。設定を満たせない環境でも、手動録音と議事録生成は独立して利用できます。
+## TeamsのCDPを使わない理由
+
+TeamsはWebView2を利用するため、デバッグ接続のCDP経由で画面を読む構成も技術的には可能です。しかし、Microsoftの手順ではデバッグ引数の設定とホストアプリの再起動が必要です。接続後も予定取得がTeamsの画面構造や表示状態に依存します。このアプリでは、既存のクラシック版Outlookから構造化された予定を取得する方式を標準にしています。[WebView2の接続手順](https://learn.microsoft.com/en-us/microsoft-edge/web-platform/devtools-mcp-server#auto-connect-to-a-webview2-instance)、[Outlookの繰り返し予定取得](https://learn.microsoft.com/en-us/office/vba/api/outlook.items.includerecurrences)
+
+Teamsのデバッグポート、起動引数、レジストリは変更しません。Teams画面の読み取りは、録音の参加・退出検知にだけ使います。
+
+## 任意：既存のMicrosoft Graph接続を使う
+
+組織で以前から利用できるGraph接続がある場合は、設定の詳細項目から **Microsoft Graph** を選べます。標準利用のために新しいアプリ登録をする必要はありません。
+
+既存の接続で必要になる情報・設定は次のとおりです。
+
+- 組織から提供されたクライアントIDと、その登録に対応するテナントID。
+- パブリッククライアントのデバイスコードフローが許可されていること。
+- Microsoft Graphの委任権限 `Calendars.ReadBasic` と、組織が求める同意。
+
+値を保存し、アプリからサインインを開始します。Microsoftの認証ページに表示コードを入力して、利用するアカウントを選んでください。クライアントシークレットは使用しません。組織専用の登録には、その組織のテナントIDを指定します。
+
+Graph版は `calendarView` と `onlineMeeting.joinUrl` を利用します。条件付きアクセスやデバイスコードフローの制限は回避しません。[Microsoftのデスクトップアプリ設定](https://learn.microsoft.com/en-us/entra/identity-platform/scenario-desktop-app-configuration)、[calendarViewの権限](https://learn.microsoft.com/en-us/graph/api/calendar-list-calendarview?view=graph-rest-1.0)
+
+Graphの認証キャッシュはWindowsの資格情報ストアに保存されます。標準のOutlookデスクトップ連携ではこの認証キャッシュを使用しません。

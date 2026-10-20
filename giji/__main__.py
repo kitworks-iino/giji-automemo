@@ -4,6 +4,7 @@ import argparse
 import os
 import secrets
 import socket
+import sys
 import threading
 import time
 import webbrowser
@@ -34,6 +35,11 @@ def acquire_lock(data_dir: Path):
 
 
 def main():
+    # The isolated helper must run COM on its own main STA thread. Frozen builds
+    # use this entry point without starting a second app or opening the browser.
+    if sys.argv[1:] == ["--calendar-worker"]:
+        from .desktop_calendar import worker_main
+        raise SystemExit(worker_main())
     parser = argparse.ArgumentParser(description="giji — Windows 11 Teams meeting notes")
     parser.add_argument("--data-dir", type=Path, default=default_data_dir())
     parser.add_argument("--port", type=int, default=0, help="Loopback port; 0 chooses a free port")

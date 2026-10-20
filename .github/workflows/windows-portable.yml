@@ -1,0 +1,93 @@
+name: Windows portable release
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch, tag or commit to build and test
+        required: true
+        default: main
+        type: string
+      release_tag:
+        description: Optional existing release tag; must point at the checked-out commit
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-portable-${{ inputs.ref }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      PYTHONUTF8: "1"
+      HF_HUB_DISABLE_SYMLINKS_WARNING: "1"
+    steps:
+      - name: Validate release tag
+        shell: pwsh
+        run: |
+          if ($env:RELEASE_TAG -and $env:RELEASE_TAG -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+$') { throw "Invalid release tag." }
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify optional release points at the checked-out commit
+        if: inputs.release_tag != ''
+        shell: pwsh
+        run: |
+          $Expected = git rev-parse "refs/tags/$env:RELEASE_TAG^{commit}"
+          if ($LASTEXITCODE -ne 0) { throw "Release tag does not exist." }
+          $Actual = git rev-parse HEAD
+          if ($Expected -ne $Actual) { throw "Release tag and build commit do not match." }
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          architecture: x64
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install runtime and packaging dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev,windows,local]" "av==16.1.0" "pyinstaller>=6.16,<7"
+      - name: Validate release source
+        run: |
+          python -m ruff check .
+          if ($LASTEXITCODE -ne 0) { throw "Lint failed." }
+          python -m pytest -q
+          if ($LASTEXITCODE -ne 0) { throw "Tests failed." }
+      - name: Build, collect licenses and sources, and test the full portable ZIP
+        shell: pwsh
+        run: ./scripts/build-portable.ps1
+      - name: Preserve verified artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-portable-${{ github.run_id }}
+          path: |
+            dist/giji-automemo-windows-x64.zip
+            dist/portable-SHA256SUMS.txt
+          compression-level: 0
+          retention-days: 7
+      - name: Attach verified portable files to the existing release
+        if: inputs.release_tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: pwsh
+        run: |
+          gh release view $env:RELEASE_TAG
+          if ($LASTEXITCODE -ne 0) { throw "Create the release before uploading portable assets." }
+          gh release upload $env:RELEASE_TAG dist/giji-automemo-windows-x64.zip dist/portable-SHA256SUMS.txt --clobber
+          if ($LASTEXITCODE -ne 0) { throw "Release asset upload failed." }

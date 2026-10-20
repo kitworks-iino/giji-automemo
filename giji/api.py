@@ -5,6 +5,7 @@ import hashlib
 import re
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Literal
 from urllib.parse import quote, urlparse
 
 from fastapi import FastAPI, HTTPException, Request
@@ -16,6 +17,7 @@ from .service import GijiService, public_session
 
 class SettingsPatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    calendar_source: Literal["outlook_desktop", "graph"] = "outlook_desktop"
     client_id: str = Field("", max_length=100)
     tenant_id: str = Field("organizations", max_length=100)
     auto_record: bool = False

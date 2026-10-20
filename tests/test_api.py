@@ -75,6 +75,7 @@ def test_partial_settings_patch_does_not_reset_unrelated_settings(client, servic
 
 
 @pytest.mark.parametrize("patch", [
+    {"calendar_source": "private-teams-endpoint"},
     {"unknown_setting": True},
     {"client_id": "not-a-client-id"},
     {"tenant_id": ""},

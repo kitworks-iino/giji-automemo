@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import sys
 import tarfile
 import tempfile
 from typing import Callable
@@ -24,6 +25,8 @@ EMBEDDING_URL = (
     "3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx"
 )
 SEGMENTATION_MEMBER = "sherpa-onnx-pyannote-segmentation-3-0/model.onnx"
+WHISPER_REQUIRED_FILES = (".complete", "model.bin", "config.json", "tokenizer.json")
+DIARIZATION_REQUIRED_FILES = (".complete", "segmentation.onnx", "embedding.onnx")
 
 
 class ModelError(RuntimeError):
@@ -31,54 +34,88 @@ class ModelError(RuntimeError):
 
 
 class ModelManager:
-    def __init__(self, data_dir: Path):
+    def __init__(self, data_dir: Path, *, bundled_models: Path | None = None):
         self.directory = Path(data_dir) / "models"
-        self.segmentation_path = self.directory / "diarization" / "segmentation.onnx"
-        self.embedding_path = self.directory / "diarization" / "embedding.onnx"
+        # PyInstaller onedir layout: App.exe, _internal/, models/. Resolve from
+        # the executable, never the working directory or an environment override.
+        # Source runs use only user models unless a bundle is injected by tests.
+        self.bundled_directory = (
+            Path(bundled_models).resolve() if bundled_models is not None
+            else Path(sys.executable).resolve().parent / "models" if getattr(sys, "frozen", False)
+            else None
+        )
 
-    def whisper_path(self, settings: dict) -> Path:
+    @staticmethod
+    def _complete(directory: Path, filenames: tuple[str, ...]) -> bool:
+        """Completion markers alone do not establish a usable model."""
+        try:
+            return all((directory / name).is_file() and (directory / name).stat().st_size > 0
+                       for name in filenames)
+        except OSError:
+            return False
+
+    def _resolve(self, subdirectory: str, required: tuple[str, ...]) -> Path:
+        user_directory = self.directory / subdirectory
+        if self._complete(user_directory, required):
+            return user_directory
+        if self.bundled_directory is not None:
+            bundled_directory = self.bundled_directory / subdirectory
+            if self._complete(bundled_directory, required):
+                return bundled_directory
+        # Missing/incomplete models always resolve to the writable destination.
+        return user_directory
+
+    @property
+    def segmentation_path(self) -> Path:
+        return self._resolve("diarization", DIARIZATION_REQUIRED_FILES) / "segmentation.onnx"
+
+    @property
+    def embedding_path(self) -> Path:
+        return self._resolve("diarization", DIARIZATION_REQUIRED_FILES) / "embedding.onnx"
+
+    @staticmethod
+    def _model_name(settings: dict) -> str:
         model = settings.get("whisper_model", "small")
         if model not in WHISPER_MODELS:
             raise ModelError("対応していない文字起こしモデルです。")
-        return self.directory / f"whisper-{model}"
+        return model
+
+    def whisper_path(self, settings: dict) -> Path:
+        model = self._model_name(settings)
+        return self._resolve(f"whisper-{model}", WHISPER_REQUIRED_FILES)
 
     def status(self, settings: dict) -> dict:
         try:
             directory = self.whisper_path(settings)
         except ModelError as exc:
             return {"ready": False, "detail": str(exc)}
-        # A completion marker prevents partial downloads being accepted as ready.
-        required = [
-            directory / ".complete",
-            directory / "model.bin",
-            directory / "config.json",
-            directory / "tokenizer.json",
-        ]
+        if not self._complete(directory, WHISPER_REQUIRED_FILES):
+            return {"ready": False,
+                    "detail": f"文字起こしモデル「{self._model_name(settings)}」がありません。設定からダウンロードしてください。"}
+        directories = [directory]
         if settings.get("diarization", True):
-            required += [
-                self.segmentation_path,
-                self.embedding_path,
-                self.segmentation_path.parent / ".complete",
-            ]
-        ready = all(p.is_file() and p.stat().st_size > 0 for p in required)
-        return {
-            "ready": ready,
-            "detail": "ローカルモデルを準備済み" if ready else "設定から音声モデルをダウンロードしてください。",
-        }
+            diarization_directory = self.segmentation_path.parent
+            if not self._complete(diarization_directory, DIARIZATION_REQUIRED_FILES):
+                return {"ready": False, "detail": "話者分離モデルがありません。設定からダウンロードしてください。"}
+            directories.append(diarization_directory)
+        bundled = self.bundled_directory is not None and any(
+            path.parent == self.bundled_directory for path in directories
+        )
+        return {"ready": True,
+                "detail": "同梱のローカルモデルを準備済み（ダウンロード不要）" if bundled else "ローカルモデルを準備済み"}
 
     def download(self, settings: dict, progress_callback: Callable[[str], None]) -> None:
-        directory = self.whisper_path(settings)
-        self.directory.mkdir(parents=True, exist_ok=True)
+        model = self._model_name(settings)
+        directory = self.directory / f"whisper-{model}"
         try:
-            whisper_files = (".complete", "model.bin", "config.json", "tokenizer.json")
-            if not all((directory / name).is_file() and (directory / name).stat().st_size > 0 for name in whisper_files):
+            if not self._complete(self.whisper_path(settings), WHISPER_REQUIRED_FILES):
                 from faster_whisper.utils import download_model
 
                 progress_callback("文字起こしモデルをダウンロードしています。初回は数分かかります。")
                 directory.mkdir(parents=True, exist_ok=True)
-                download_model(settings.get("whisper_model", "small"), output_dir=str(directory))
+                download_model(model, output_dir=str(directory))
                 required = ["model.bin", "config.json", "tokenizer.json"]
-                if not all((directory / f).is_file() for f in required):
+                if not self._complete(directory, tuple(required)):
                     raise ModelError("文字起こしモデルの取得が不完全です。再実行してください。")
                 (directory / ".complete").write_text("1\n", encoding="utf-8")
             if settings.get("diarization", True):
@@ -94,18 +131,18 @@ class ModelManager:
         progress_callback("ローカルモデルの準備が完了しました。")
 
     def _download_diarization(self, callback: Callable[[str], None]) -> None:
-        directory = self.segmentation_path.parent
-        directory.mkdir(parents=True, exist_ok=True)
-        if (
-            (directory / ".complete").is_file()
-            and self.segmentation_path.is_file()
-            and self.embedding_path.is_file()
-        ):
+        if self._complete(self.segmentation_path.parent, DIARIZATION_REQUIRED_FILES):
             return
+        # Always write to the user's data directory, even when the installation
+        # contains an incomplete or read-only bundle.
+        directory = self.directory / "diarization"
+        segmentation_path = directory / "segmentation.onnx"
+        embedding_path = directory / "embedding.onnx"
+        directory.mkdir(parents=True, exist_ok=True)
         callback("話者分離モデルをダウンロードしています。")
         with tempfile.TemporaryDirectory(prefix="giji-model-", dir=self.directory) as temporary:
             temporary = Path(temporary)
-            if not self.segmentation_path.is_file():
+            if not self._complete(directory, ("segmentation.onnx",)):
                 archive_path = temporary / "segmentation.tar.bz2"
                 self._fetch(SEGMENTATION_URL, archive_path)
                 with tarfile.open(archive_path, "r:bz2") as archive:
@@ -118,7 +155,7 @@ class ModelManager:
                         raise ModelError("話者分離モデルを読み取れませんでした。")
                     with source, (temporary / "segmentation.onnx").open("wb") as target:
                         shutil.copyfileobj(source, target)
-                    os.replace(temporary / "segmentation.onnx", self.segmentation_path)
+                    os.replace(temporary / "segmentation.onnx", segmentation_path)
                     for name in ("LICENSE", "README.md"):
                         try:
                             item = archive.getmember(f"sherpa-onnx-pyannote-segmentation-3-0/{name}")
@@ -129,9 +166,9 @@ class ModelManager:
                                         (directory / f"segmentation-{name}").write_bytes(stream.read())
                         except KeyError:
                             pass
-            if not self.embedding_path.is_file():
+            if not self._complete(directory, ("embedding.onnx",)):
                 self._fetch(EMBEDDING_URL, temporary / "embedding.onnx")
-                os.replace(temporary / "embedding.onnx", self.embedding_path)
+                os.replace(temporary / "embedding.onnx", embedding_path)
         (directory / "sources.json").write_text(
             json.dumps({"segmentation": SEGMENTATION_URL, "embedding": EMBEDDING_URL}, indent=2),
             encoding="utf-8",

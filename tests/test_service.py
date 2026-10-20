@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -274,6 +275,91 @@ async def test_failed_sync_keeps_previous_calendar_and_reports_error(service):
     assert service.store.meetings() == [meeting]
     assert service.health["calendar"]["state"] == "error"
     assert "private token" not in str(service.health)
+
+
+@pytest.mark.asyncio
+async def test_default_desktop_sync_does_not_require_microsoft_login(service):
+    assert service.store.settings()["calendar_source"] == "outlook_desktop"
+    assert service.store.settings()["client_id"] == ""
+    service.calendar.is_connected.return_value = False
+    meeting = {"id": "desktop-meeting", "start": "2026-10-20T01:00:00+00:00"}
+    service.calendar.fetch_today.return_value = [meeting]
+    await service.sync()
+    service.calendar.fetch_today.assert_called_once()
+    assert service.store.meetings() == [meeting]
+    assert service.snapshot()["microsoft"]["connected"] is True
+    assert service.snapshot()["microsoft"]["provider"] == "outlook_desktop"
+    assert service.public_settings()["has_microsoft_login"] is False
+
+
+@pytest.mark.asyncio
+async def test_graph_still_requires_login_and_is_not_silently_used_as_fallback(service):
+    service.store.update_settings({"calendar_source": "graph"})
+    service.calendar.is_connected.return_value = False
+    await service.sync()
+    service.calendar.fetch_today.assert_not_called()
+    assert service.health["calendar"]["state"] == "disconnected"
+
+
+@pytest.mark.asyncio
+async def test_desktop_mode_never_starts_microsoft_device_login(service):
+    with pytest.raises(ValueError, match="サインイン不要"):
+        await service.login()
+    service.calendar.begin_login.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_changing_source_clears_stale_meetings_but_keeps_recordings(service):
+    saved_session(service)
+    service.store.add_meeting({"id": "old", "start": "2026-10-20T01:00:00+00:00"})
+    await service.update_settings({"calendar_source": "graph"})
+    assert service.store.meetings() == []
+    assert len(service.store.sessions()) == 1
+    assert service.snapshot()["microsoft"]["provider"] == "graph"
+    assert service.health["calendar"]["last_sync"] is None
+
+
+@pytest.mark.asyncio
+async def test_safe_desktop_error_is_visible_and_keeps_cached_meetings(service):
+    from giji.microsoft import CalendarError
+
+    service.store.add_meeting({"id": "old", "start": "2026-10-20T01:00:00+00:00"})
+    service.calendar.fetch_today.side_effect = CalendarError("従来版Outlookを起動してください。")
+    await service.sync()
+    assert service.health["calendar"]["detail"] == "従来版Outlookを起動してください。"
+    assert len(service.store.meetings()) == 1
+
+
+@pytest.mark.asyncio
+async def test_start_drops_v01_calendar_cache_without_removing_saved_minutes(service):
+    saved_session(service)
+    service.store.add_meeting({"id": "old-graph-account", "start": "2026-10-20T01:00:00+00:00"})
+    await service.start()
+    try:
+        assert service.store.meetings() == []
+        assert len(service.store.sessions()) == 1
+    finally:
+        await service.close()
+
+
+def test_today_view_excludes_previous_day_even_when_sync_fails(service):
+    now = datetime(2026, 10, 20, 12, tzinfo=timezone(timedelta(hours=9)))
+    service.store.add_meeting({
+        "id": "yesterday", "start": "2026-10-19T01:00:00+00:00", "end": "2026-10-19T02:00:00+00:00"})
+    service.store.add_meeting({
+        "id": "today", "start": "2026-10-20T01:00:00+00:00", "end": "2026-10-20T02:00:00+00:00"})
+    service.health["calendar"]["state"] = "error"
+    assert [m["id"] for m in service.today_meetings(now)] == ["today"]
+
+
+def test_automatic_recording_does_not_bind_to_failed_sync_cache(service):
+    now = datetime.now(timezone.utc)
+    service.store.add_meeting({
+        "id": "old-account", "start": now.isoformat(), "end": (now + timedelta(minutes=10)).isoformat()})
+    service.health["calendar"].update(state="error", last_sync=now.isoformat())
+    assert service.matchable_meetings() == []
+    service.armed_id = "old-account"
+    assert service.matchable_meetings()[0]["id"] == "old-account"
 
 
 @pytest.mark.asyncio
