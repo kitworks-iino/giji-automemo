@@ -63,7 +63,9 @@ def _launch_application(command, *, cwd, env, stdout) -> _SmokeApplication:
     import win32con
     import win32job
 
-    job = win32job.CreateJobObject(None, None)  # NULL security attributes: non-inheritable handle.
+    # pywin32 requires a string name; an empty name creates an unnamed job.
+    # NULL security attributes keep its handle non-inheritable.
+    job = win32job.CreateJobObject(None, "")
     process = None
     try:
         limits = win32job.QueryInformationJobObject(job, win32job.JobObjectExtendedLimitInformation)

@@ -61,7 +61,7 @@ def test_windows_smoke_assigns_suspended_app_before_resume_and_waits_for_owned_d
     native = windows_launch(monkeypatch)
     application = smoke._launch_application(["isolated-test.exe"], cwd="test-folder", env={}, stdout=None)
     assert smoke.subprocess.Popen.call_args.kwargs["creationflags"] == 0x00000004
-    native.job_api.CreateJobObject.assert_called_once_with(None, None)
+    native.job_api.CreateJobObject.assert_called_once_with(None, "")
     limits = native.job_api.SetInformationJobObject.call_args.args[2]
     assert limits["BasicLimitInformation"]["LimitFlags"] & 0x2000
     assert native.events[:3] == ["assign", "close-process-handle", "resume"]
