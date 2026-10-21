@@ -1,8 +1,10 @@
 """Synthetic UIA observations, not captures from a real Microsoft Teams build."""
 
+import builtins
 import json
 import subprocess
 import sys
+import warnings
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -266,6 +268,38 @@ def test_native_property_walker_is_read_only_hidden_aware_and_bounded():
     assert len(names) == 5
     assert "secret hidden" not in names
     assert result["children"][0]["selected"] is True
+
+
+@pytest.mark.parametrize("message,category,module,suppressed", [
+    ("Apply externally defined coinit_flags: 0", UserWarning, "pywinauto", True),
+    ("Apply externally defined coinit_flags: 2", UserWarning, "pywinauto", False),
+    ("Revert to STA COM threading mode", UserWarning, "pywinauto", False),
+    ("Apply externally defined coinit_flags: 0", RuntimeWarning, "pywinauto", False),
+    ("Apply externally defined coinit_flags: 0", UserWarning, "another_module", False),
+])
+def test_only_known_pywinauto_mta_import_warning_is_suppressed(
+    monkeypatch, message, category, module, suppressed,
+):
+    actual_import = builtins.__import__
+    desktop = object()
+
+    def imported(name, *args, **kwargs):
+        if name == "pywinauto":
+            warnings.warn_explicit(message, category, "pywinauto/__init__.py", 71, module=module)
+            return SimpleNamespace(Desktop=desktop)
+        return actual_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", imported)
+    with warnings.catch_warnings(record=True) as recorded:
+        warnings.simplefilter("always")
+        assert uia._desktop_class() is desktop
+        assert len(recorded) == (0 if suppressed else 1)
+        # The import-only filter must not alter callers' warning policy.
+        warnings.warn_explicit(
+            "Apply externally defined coinit_flags: 0", UserWarning,
+            "pywinauto/__init__.py", 71, module="pywinauto",
+        )
+        assert len(recorded) == (1 if suppressed else 2)
 
 
 def test_native_collection_verifies_ownership_before_reading_calendar(monkeypatch):

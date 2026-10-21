@@ -15,6 +15,7 @@ import subprocess
 import sys
 import threading
 import time
+import warnings
 from collections.abc import Callable, Mapping
 
 from .teams_calendar_parser import CalendarParseError, parse_calendar_snapshot
@@ -207,14 +208,27 @@ def _read_node(control, budget: list[int], depth: int = 0) -> dict | None:
     return node
 
 
+def _desktop_class():
+    # pywinauto 0.6.9 announces an explicitly chosen MTA with a UserWarning.
+    # This is our intended worker setup; keep every other import diagnostic,
+    # especially its warning about falling back to an incompatible STA.
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore", message=r"\AApply externally defined coinit_flags: 0\Z",
+            category=UserWarning, module=r"\Apywinauto\Z",
+        )
+        from pywinauto import Desktop
+    return Desktop
+
+
 def collect_snapshots() -> list[dict]:
     """Native read path, invoked only by the bounded Windows worker process."""
     import psutil
-    from pywinauto import Desktop
     from tzlocal import get_localzone_name
 
     from .teams_connection import _WindowsBackend
 
+    Desktop = _desktop_class()
     backend = _WindowsBackend()
     owner = backend.owner()
     possible = {p.info["pid"] for p in psutil.process_iter(["pid", "name"])
