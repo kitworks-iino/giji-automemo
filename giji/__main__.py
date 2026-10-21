@@ -52,6 +52,12 @@ def main():
     parser.add_argument("--no-browser", action="store_true")
     parser.add_argument("--demo", action="store_true", help="Insert explicitly labelled sample content")
     args = parser.parse_args()
+    from .runtime_dependencies import ProhibitedDependencyError, ensure_no_prohibited_dependencies
+
+    try:
+        ensure_no_prohibited_dependencies()
+    except ProhibitedDependencyError as exc:
+        parser.exit(1, f"{exc}\n")
     try:
         lock = acquire_lock(args.data_dir)
     except RuntimeError as exc:

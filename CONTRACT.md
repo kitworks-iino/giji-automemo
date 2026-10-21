@@ -3,6 +3,15 @@
 Windows 11 x64 local application, standard CPython 3.11–3.13 (3.13 preferred),
 FastAPI loopback server, React/Vite UI. Portable builds include CPython 3.13;
 the system Python installation does not control the portable executable.
+FFmpeg is prohibited, including indirect use and bundled native code. The
+v0.5 audio path uses PCM16 WAV via Python wave/NumPy/SciPy, sherpa-onnx 1.13.8
+Whisper ONNX and Silero VAD. PyAV, faster-whisper, FFmpeg binaries/libraries,
+and their corresponding-source archives are excluded from the distribution.
+Existing source virtual environments containing prohibited packages must be
+recreated; installing updated requirements alone does not remove old packages.
+Browser playback parses PCM WAV directly and supplies AudioBuffer samples to
+Web Audio; it must not use media elements or decodeAudioData. Preinstalled
+Teams and browser software are outside the application's distributed files.
 Meeting/session timestamps are ISO8601 UTC; the CDP preparation `expires_at`
 is a Unix timestamp in seconds. Public API paths `/api`. Request authentication:
 `Authorization: Bearer <runtime token>`; token supplied to SPA in URL fragment
@@ -190,6 +199,10 @@ Frozen runs resolve shipped models at `Path(sys.executable).parent / "models"`.
 Complete user models take precedence, otherwise complete bundled models are
 read directly without copying/downloading. Source runs never implicitly scan
 the repository for models.
+Whisper uses `whisper-onnx-{tiny,base,small,medium,large-v3}` with pinned
+encoder/decoder ONNX weights, tokens, and Silero VAD. Downloads verify SHA-256;
+completion markers identify the ONNX engine. Legacy CTranslate2 caches are
+not reused. `large-v3-turbo` is unsupported and requires selecting another model.
 `Pipeline(model_manager,secrets)`; `process(session:dict,settings:dict,
 on_update:Callable[[dict],None])->dict` blocking. Persist partial segments via
 callback before LLM. Callback status and optional error/segments/minutes.
@@ -198,4 +211,9 @@ Self microphone label SELF; remote labels SPEAKER_00 etc, no inferred names.
 `speaker_names` maps names manually; never infer real names from voice.
 LLM sends transcript only, only when cloud_consent true and API key exists.
 Local speech models default CPU int8. Long transcripts chunked and summarized.
+PCM is read/resampled in bounded blocks, preserving absolute recording offsets.
+Silero VAD limits utterances to 28 seconds before Whisper's 30-second input
+limit. Native segment timestamps are retained; no per-word times are invented.
+Remote diarization assigns segments by overlap, so a speaker change inside one
+ASR segment is approximate. Existing word-timestamp records remain readable.
 Avoid sending secrets or raw transcripts in exception messages/logs.

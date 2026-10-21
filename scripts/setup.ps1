@@ -53,6 +53,10 @@ if (Test-Path $venvPython) {
         throw "The existing .venv is incompatible. Keep your application data, move .venv aside, and run setup with standard Python 3.13 x64."
     }
     $selectedPython = $venvPython
+    & $venvPython (Join-Path $PSScriptRoot "audit_dependencies.py") --environment --metadata-only
+    if ($LASTEXITCODE -ne 0) {
+        throw "The existing .venv contains prohibited legacy audio packages. Move .venv aside and create a clean environment; application data is separate."
+    }
 }
 else {
     if (Test-Path (Join-Path $projectRoot ".venv")) {
@@ -74,6 +78,8 @@ if (-not (Test-Path $venvPython)) {
 Assert-NativeSuccess "pip update"
 & $venvPython -m pip install -e ".[windows,local]"
 Assert-NativeSuccess "Python dependency installation"
+& $venvPython (Join-Path $PSScriptRoot "audit_dependencies.py") --environment
+Assert-NativeSuccess "Audio dependency verification"
 
 if (-not $SkipFrontend) {
     if (-not (Get-Command npm.cmd -ErrorAction SilentlyContinue)) {

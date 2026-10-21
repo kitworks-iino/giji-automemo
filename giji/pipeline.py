@@ -42,6 +42,115 @@ EMPTY_MINUTES = {
     "topics": [],
 }
 
+ASR_SAMPLE_RATE = 16_000
+ASR_MAX_SECONDS = 28
+VAD_WINDOW_SAMPLES = 512
+
+
+def pcm16_blocks(path: Path):
+    """Decode local PCM WAV directly, in one-second blocks, without media codecs.
+
+    Whole-second resampling blocks produce exactly 16,000 output samples, so
+    long recordings do not accumulate rounding drift between mic and system.
+    Only the final fractional block may be rounded by less than one sample.
+    """
+    import numpy as np
+    from scipy.signal import resample_poly
+
+    if not path.is_file():
+        raise PipelineError("録音ファイルが不足しています。残っている音声は会議詳細から確認できます。")
+    try:
+        with wave.open(str(path), "rb") as recording:
+            rate, channels = recording.getframerate(), recording.getnchannels()
+            if (recording.getsampwidth() != 2 or recording.getcomptype() != "NONE"
+                    or not 1 <= channels <= 32 or not 8_000 <= rate <= 192_000):
+                raise PipelineError("録音形式が対応していません。8〜192kHz・16bit PCMのWAVが必要です。")
+            frames_read = 0
+            while frames := recording.readframes(rate):
+                if len(frames) % (2 * channels):
+                    raise PipelineError("録音ファイルの音声データが途中で切れています。")
+                frames_read += len(frames) // (2 * channels)
+                samples = np.frombuffer(frames, dtype="<i2").astype(np.float32) / 32768.0
+                samples = samples.reshape(-1, channels).mean(axis=1)
+                if rate != ASR_SAMPLE_RATE:
+                    divisor = math.gcd(rate, ASR_SAMPLE_RATE)
+                    samples = resample_poly(samples, ASR_SAMPLE_RATE // divisor, rate // divisor)
+                yield np.ascontiguousarray(samples, dtype=np.float32)
+            if frames_read != recording.getnframes():
+                raise PipelineError("録音ファイルの音声データが途中で切れています。")
+    except (wave.Error, EOFError, OSError):
+        raise PipelineError("録音WAVを読み取れませんでした。録音ファイルを確認してください。") from None
+
+
+def speech_chunks(path: Path, vad):
+    """Yield bounded speech arrays with original 16 kHz sample positions.
+
+    Silence is fed to VAD instead of being removed from the timeline. VAD state
+    is new for each track. Copy a completed segment before popping its native
+    queue reference, and flush trailing speech at EOF.
+    """
+    import numpy as np
+
+    pending = np.empty(0, dtype=np.float32)
+    total_samples = 0
+    maximum = ASR_SAMPLE_RATE * ASR_MAX_SECONDS
+
+    def completed():
+        while not vad.empty():
+            segment = vad.front
+            start = int(segment.start)
+            samples = np.array(segment.samples, dtype=np.float32, copy=True)
+            vad.pop()
+            if start < 0 or samples.ndim != 1 or not np.isfinite(samples).all():
+                raise PipelineError("音声区間の時刻を読み取れませんでした。モデルを確認してください。")
+            # A padded final VAD window must never extend the recording duration.
+            samples = samples[:max(0, total_samples - start)]
+            # Divide an unexpectedly long native segment evenly. A 28.01-second
+            # segment must not leave a 10 ms tail for a separate Whisper decode.
+            count = max(1, math.ceil(len(samples) / maximum))
+            chunk_size = max(1, math.ceil(len(samples) / count))
+            for offset in range(0, len(samples), chunk_size):
+                yield (start + offset) / ASR_SAMPLE_RATE, samples[offset:offset + chunk_size]
+
+    for samples in pcm16_blocks(path):
+        total_samples += len(samples)
+        pending = np.concatenate((pending, samples))
+        consumed = len(pending) // VAD_WINDOW_SAMPLES * VAD_WINDOW_SAMPLES
+        for offset in range(0, consumed, VAD_WINDOW_SAMPLES):
+            vad.accept_waveform(pending[offset:offset + VAD_WINDOW_SAMPLES])
+            yield from completed()
+        pending = pending[consumed:]
+    if len(pending):
+        vad.accept_waveform(np.pad(pending, (0, VAD_WINDOW_SAMPLES - len(pending))))
+        yield from completed()
+    vad.flush()
+    yield from completed()
+
+
+def whisper_segments(result, offset: float, duration: float, speaker: str) -> list[dict]:
+    """Use native Whisper segment timestamps, not invented per-word timings."""
+    texts = list(result.segment_texts)
+    starts = list(result.segment_timestamps)
+    durations = list(result.segment_durations)
+    if not (len(texts) == len(starts) == len(durations)):
+        raise PipelineError("文字起こしの時刻情報を取得できませんでした。モデルを確認してください。")
+    if not texts:
+        # Some decoder outputs omit timestamp tokens. The measured VAD interval
+        # is an honest, coarser bound; never manufacture word-level timestamps.
+        text = result.text.strip()
+        return [{"start": round(offset, 3), "end": round(offset + duration, 3),
+                 "speaker": speaker, "text": text}] if text and duration > 0 else []
+    segments = []
+    for text, start, length in zip(texts, starts, durations):
+        start, length = float(start), float(length)
+        if not math.isfinite(start) or not math.isfinite(length) or start < 0 or length < 0:
+            raise PipelineError("文字起こしの時刻情報が正しくありません。モデルを確認してください。")
+        end = min(duration, start + length)
+        if text.strip() and start < end:
+            segments.append({"start": round(offset + start, 3), "end": round(offset + end, 3),
+                             "speaker": speaker, "text": text.strip()})
+    return segments
+
 
 def validate_minutes(value: object) -> dict:
     """Reject malformed model output rather than treating it as a successful result."""
@@ -120,7 +229,11 @@ def transcript_chunks(segments: list[dict], names: dict, limit: int = 14_000) ->
 
 
 def assign_speakers(segments: list[dict], turns: list[dict]) -> list[dict]:
-    """Assign words by temporal overlap, then regroup adjacent words by speaker."""
+    """Assign native segments (or saved word timestamps) by temporal overlap.
+
+    Keep native segment boundaries: their timestamps cannot determine speaker
+    changes within a segment. Legacy word-level records may still be regrouped.
+    """
     output = []
     turns = sorted(turns, key=lambda turn: turn["start"])
     starts = [turn["start"] for turn in turns]
@@ -145,11 +258,11 @@ def assign_speakers(segments: list[dict], turns: list[dict]) -> list[dict]:
             label = max(overlaps, key=overlaps.get) if overlaps else "SPEAKER_UNKNOWN"
             text = str(unit.get("word", unit.get("text", "")))
             if (
-                output and output[-1]["speaker"] == label
+                "word" in unit and output and output[-1]["speaker"] == label
                 and start - output[-1]["end"] <= 1.0
                 and output[-1]["speaker"] != "SELF"
             ):
-                output[-1]["end"] = end
+                output[-1]["end"] = max(output[-1]["end"], end)
                 output[-1]["text"] += text
             else:
                 output.append({"start": start, "end": end, "speaker": label, "text": text})
@@ -215,48 +328,38 @@ class Pipeline:
 
     def _transcribe(self, directory: Path, settings: dict) -> list[dict]:
         try:
-            import onnxruntime
-            from faster_whisper import WhisperModel
+            import sherpa_onnx
+            import scipy.signal  # noqa: F401 - fail before native model loading if setup is incomplete
         except ImportError as exc:
             raise PipelineError("文字起こしライブラリがありません。セットアップを再実行してください。") from exc
-        onnxruntime.disable_telemetry_events()
-        model = WhisperModel(
-            str(self.models.whisper_path(settings)),
-            device="cpu",
-            compute_type="int8",
-            cpu_threads=4,
-            local_files_only=True,
+        directory_model = self.models.whisper_path(settings)
+        model = sherpa_onnx.OfflineRecognizer.from_whisper(
+            encoder=str(directory_model / "encoder.int8.onnx"),
+            decoder=str(directory_model / "decoder.int8.onnx"),
+            tokens=str(directory_model / "tokens.txt"),
+            language=settings.get("language", "ja") or "",
+            task="transcribe", num_threads=4, provider="cpu", debug=False,
+            enable_segment_timestamps=True, enable_token_timestamps=False,
         )
+        vad_config = sherpa_onnx.VadModelConfig(
+            silero_vad=sherpa_onnx.SileroVadModelConfig(
+                model=str(directory_model / "silero_vad.onnx"), threshold=0.5,
+                min_silence_duration=0.5, min_speech_duration=0.25,
+                window_size=VAD_WINDOW_SAMPLES, max_speech_duration=ASR_MAX_SECONDS,
+            ),
+            sample_rate=ASR_SAMPLE_RATE, num_threads=1, provider="cpu", debug=False,
+        )
+        if not vad_config.validate():
+            raise PipelineError("音声区間検出モデルを読み込めませんでした。モデルを再取得してください。")
         all_segments = []
         for filename, speaker in (("microphone.wav", "SELF"), ("system.wav", "SPEAKER_00")):
-            path = directory / filename
-            if not path.is_file():
-                raise PipelineError("録音ファイルが不足しています。残っている音声は会議詳細から確認できます。")
-            with wave.open(str(path), "rb") as recording:
-                if recording.getnframes() == 0:
-                    continue
-            segments, _ = model.transcribe(
-                str(path),
-                language=settings.get("language", "ja") or None,
-                beam_size=5,
-                vad_filter=True,
-                word_timestamps=True,
-                condition_on_previous_text=False,
-            )
-            for segment in segments:
-                text = segment.text.strip()
-                if not text:
-                    continue
-                all_segments.append({
-                    "start": round(float(segment.start), 3),
-                    "end": round(float(segment.end), 3),
-                    "speaker": speaker,
-                    "text": text,
-                    "words": [
-                        {"start": round(float(w.start), 3), "end": round(float(w.end), 3), "word": w.word}
-                        for w in segment.words or []
-                    ],
-                })
+            vad = sherpa_onnx.VoiceActivityDetector(vad_config, buffer_size_in_seconds=60)
+            for offset, samples in speech_chunks(directory / filename, vad):
+                stream = model.create_stream()
+                stream.accept_waveform(ASR_SAMPLE_RATE, samples)
+                model.decode_stream(stream)
+                all_segments.extend(whisper_segments(stream.result, offset, len(samples) / ASR_SAMPLE_RATE, speaker))
+            del vad
         del model
         return sorted(all_segments, key=lambda item: (item["start"], item["speaker"]))
 

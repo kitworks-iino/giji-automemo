@@ -1,6 +1,6 @@
 # 代替の予定連携：Outlook・Microsoft Graph
 
-v0.4の標準は [Teamsデスクトップ連携](teams-desktop.md) です。このページは、詳細設定で **Outlook（クラシック）** または既存の **Microsoft Graph** 接続を自分で選ぶ場合の説明です。Teamsの取得失敗から自動で切り替わることはありません。
+v0.5の標準は [Teamsデスクトップ連携](teams-desktop.md) です。このページは、詳細設定で **Outlook（クラシック）** または既存の **Microsoft Graph** 接続を自分で選ぶ場合の説明です。Teamsの取得失敗から自動で切り替わることはありません。
 
 Outlook方式にはMicrosoft Entraへのアプリ登録、クライアントID、テナントID、Microsoft用APIキーは不要です。普段使っているOutlookのプロファイルを利用します。
 

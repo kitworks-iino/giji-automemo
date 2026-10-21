@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing release tag (for example v0.4.0)
+        description: Existing release tag (for example v0.5.0)
         required: true
-        default: v0.4.0
+        default: v0.5.0
         type: string
 
 permissions:
@@ -34,6 +34,7 @@ jobs:
         working-directory: frontend
         run: |
           npm ci
+          npm test
           npm run build
       - name: Assemble and verify source archive
         run: |
@@ -63,6 +64,7 @@ jobs:
               assert "giji-automemo/frontend/dist/index.html" in names
               assert output.testzip() is None
           PY
+          python scripts/audit_dependencies.py --archive giji-automemo-windows-source.zip
           sha256sum giji-automemo-windows-source.zip > SHA256SUMS.txt
       - name: Upload to existing release
         env:

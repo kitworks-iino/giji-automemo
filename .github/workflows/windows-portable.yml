@@ -61,7 +61,9 @@ jobs:
       - name: Install runtime and packaging dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[dev,windows,local]" "av==16.1.0" "pyinstaller>=6.16,<7"
+          python -m pip install -e ".[dev,windows,local]" "pyinstaller>=6.16,<7"
+          python scripts/audit_dependencies.py --environment
+          if ($LASTEXITCODE -ne 0) { throw "Prohibited audio dependency detected." }
       - name: Validate release source
         run: |
           python -m ruff check .

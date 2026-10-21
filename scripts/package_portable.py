@@ -4,8 +4,13 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 from pathlib import Path
+import sys
 import zipfile
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from scripts.audit_dependencies import audit_archive, audit_directory  # noqa: E402
 
 
 def main() -> None:
@@ -15,14 +20,18 @@ def main() -> None:
     args = parser.parse_args()
     required = [
         "GijiAutoMemo.exe", "_internal/frontend/dist/index.html",
-        "models/whisper-small/model.bin", "models/whisper-small/.complete",
+        "models/whisper-onnx-small/encoder.int8.onnx", "models/whisper-onnx-small/decoder.int8.onnx",
+        "models/whisper-onnx-small/tokens.txt", "models/whisper-onnx-small/silero_vad.onnx",
+        "models/whisper-onnx-small/.complete",
         "models/diarization/segmentation.onnx", "models/diarization/embedding.onnx",
-        "licenses/README.txt", "third-party-sources/SOURCES.json",
+        "licenses/README.txt", "third-party-sources/SOURCES.json", "DEPENDENCY-ENVIRONMENT.json",
     ]
     for name in required:
         if not (args.directory / name).is_file():
             raise RuntimeError(f"The portable distribution is incomplete: {name}")
     args.output.parent.mkdir(parents=True, exist_ok=True)
+    report = audit_directory(args.directory)
+    (args.directory / "DEPENDENCY-AUDIT.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     with zipfile.ZipFile(args.output, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
         for path in sorted(args.directory.rglob("*")):
             if path.is_file():
@@ -40,6 +49,7 @@ def main() -> None:
         names = archive.namelist()
         assert len(names) == len(set(names)), "Duplicate archive paths."
         assert archive.testzip() is None, "The ZIP integrity check failed."
+    audit_archive(args.output)
     with args.output.open("rb") as source:
         digest = hashlib.file_digest(source, "sha256").hexdigest()
     (args.output.parent / "portable-SHA256SUMS.txt").write_text(

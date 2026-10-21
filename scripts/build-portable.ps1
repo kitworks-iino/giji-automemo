@@ -9,11 +9,15 @@ try {
     if ($env:OS -ne "Windows_NT") { throw "Build this package on Windows x64." }
     & $Python (Join-Path $PSScriptRoot "check_python.py") --require-minor 3.13
     if ($LASTEXITCODE -ne 0) { throw "Standard Python 3.13 x64 is required for portable builds." }
+    & $Python scripts/audit_dependencies.py --environment --report build/dependency-environment.json
+    if ($LASTEXITCODE -ne 0) { throw "The build environment contains prohibited audio dependencies." }
 
     Push-Location (Join-Path $Repository "frontend")
     try {
         & npm ci
         if ($LASTEXITCODE -ne 0) { throw "npm ci failed." }
+        & npm test
+        if ($LASTEXITCODE -ne 0) { throw "The PCM playback tests failed." }
         & npm run build
         if ($LASTEXITCODE -ne 0) { throw "The frontend build failed." }
     } finally { Pop-Location }
@@ -26,6 +30,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed." }
 
     $Distribution = Join-Path $Repository "dist/GijiAutoMemo"
+    Copy-Item build/dependency-environment.json (Join-Path $Distribution "DEPENDENCY-ENVIRONMENT.json")
     & "$PSScriptRoot/bundle_vc_runtime.ps1" -Destination $Distribution
     & $Python scripts/bundle_models.py --cache build/model-cache --destination $Distribution
     if ($LASTEXITCODE -ne 0) { throw "Model bundling failed." }

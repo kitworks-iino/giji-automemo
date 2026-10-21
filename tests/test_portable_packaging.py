@@ -14,9 +14,11 @@ def test_portable_archive_rejects_local_teams_recovery_state(tmp_path, monkeypat
     distribution = tmp_path / "GijiAutoMemo"
     for relative in (
         "GijiAutoMemo.exe", "_internal/frontend/dist/index.html",
-        "models/whisper-small/model.bin", "models/whisper-small/.complete",
+        "models/whisper-onnx-small/encoder.int8.onnx", "models/whisper-onnx-small/decoder.int8.onnx",
+        "models/whisper-onnx-small/tokens.txt", "models/whisper-onnx-small/silero_vad.onnx",
+        "models/whisper-onnx-small/.complete",
         "models/diarization/segmentation.onnx", "models/diarization/embedding.onnx",
-        "licenses/README.txt", "third-party-sources/SOURCES.json", private_name,
+        "licenses/README.txt", "third-party-sources/SOURCES.json", "DEPENDENCY-ENVIRONMENT.json", private_name,
     ):
         path = distribution / relative
         path.parent.mkdir(parents=True, exist_ok=True)

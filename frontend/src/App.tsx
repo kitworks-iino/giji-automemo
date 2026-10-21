@@ -51,6 +51,9 @@ import {
   type Snapshot,
   type TeamsConnection,
 } from "./api";
+import { PcmPlayer } from "./PcmPlayer";
+
+const speechModels = ["tiny", "base", "small", "medium", "large-v3"];
 
 const statusNames: Record<string, string> = {
   recording: "録音中",
@@ -1907,16 +1910,7 @@ function AudioTrack({
         <p>{subtitle}</p>
         {loaded && safeUrl ? (
           <>
-            <audio
-              controls
-              src={safeUrl}
-              preload="metadata"
-              onError={() =>
-                onError(
-                  "録音データを再生できません。ファイルの状態を確認してください。",
-                )
-              }
-            />
+            <PcmPlayer url={safeUrl} title={title} onError={onError} />
             <a
               className="text-button audio-download"
               href={safeUrl}
@@ -2280,6 +2274,7 @@ function SettingsPage({
     );
   const selectedModelsReady =
     snapshot.health.models.ready &&
+    speechModels.includes(draft.whisper_model) &&
     draft.whisper_model === snapshot.settings.whisper_model &&
     draft.diarization === snapshot.settings.diarization;
   const setupSteps = [
@@ -2883,9 +2878,15 @@ function SettingsPage({
               <label className="field">
                 <span>音声認識モデル</span>
                 <select
+                  aria-label="音声認識モデル"
                   value={draft.whisper_model}
                   onChange={(e) => update("whisper_model", e.target.value)}
                 >
+                  {!speechModels.includes(draft.whisper_model) && (
+                    <option value={draft.whisper_model} disabled>
+                      {draft.whisper_model} · このバージョンでは未対応
+                    </option>
+                  )}
                   <option value="tiny">tiny · 軽量</option>
                   <option value="base">base · 高速</option>
                   <option value="small">small · バランス（推奨）</option>
@@ -2896,6 +2897,7 @@ function SettingsPage({
               <label className="field">
                 <span>会議の言語</span>
                 <select
+                  aria-label="会議の言語"
                   value={draft.language}
                   onChange={(e) => update("language", e.target.value)}
                 >
@@ -2904,6 +2906,11 @@ function SettingsPage({
                 </select>
               </label>
             </div>
+            {!speechModels.includes(draft.whisper_model) && (
+              <p className="field-error">
+                保存されている音声認識モデルには対応していません。対応するモデルを選択して設定を保存してください。
+              </p>
+            )}
             <Toggle
               checked={draft.diarization}
               onChange={(v) => update("diarization", v)}
@@ -2929,7 +2936,11 @@ function SettingsPage({
               </div>
               <button
                 className="button secondary small"
-                disabled={!!busy || selectedModelsReady}
+                disabled={
+                  !!busy ||
+                  selectedModelsReady ||
+                  !speechModels.includes(draft.whisper_model)
+                }
                 onClick={async () => {
                   if (dirty && !(await save())) return;
                   await act(
@@ -2948,7 +2959,10 @@ function SettingsPage({
               </button>
             </div>
             <p className="setting-hint">
-              モデル同梱版では「準備済み」なら追加ダウンロードは不要です。別のモデルを選ぶ場合やファイルが不足する場合だけ、モデルを準備してください。
+              新しいモデル同梱版で「準備済み」なら、追加ダウンロードは不要です。別のモデルを選ぶ場合やファイルが不足する場合は「モデルを準備」を押してください。
+            </p>
+            <p className="setting-hint">
+              v0.4以前に取得した文字起こしモデルは使用できません。ソースから更新した場合は、モデルを準備し直してください。
             </p>
           </section>
           <section id="llm-settings" className="content-card settings-card">

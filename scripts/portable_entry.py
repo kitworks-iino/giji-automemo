@@ -9,6 +9,7 @@ from pathlib import Path
 import sys
 import struct
 import sysconfig
+import shutil
 import tempfile
 import wave
 
@@ -94,12 +95,8 @@ def portable_self_test() -> None:
             and not sysconfig.get_config_var("Py_GIL_DISABLED")), (
         "The portable runtime must be standard x64 Python."
     )
-    os.environ["HF_HUB_OFFLINE"] = "1"
-    os.environ["TRANSFORMERS_OFFLINE"] = "1"
-
     # Import native integration libraries without needing Outlook, Teams or a
     # microphone on the hosted runner. Actual device/calendar checks are manual.
-    import av
     import comtypes.client
     import ctypes
     import keyring.backends.Windows
@@ -110,10 +107,12 @@ def portable_self_test() -> None:
     import scipy.signal
     import sherpa_onnx
     import win32com.client
-    from faster_whisper import WhisperModel
 
     from giji.models import ModelManager
     from giji.pipeline import Pipeline
+    from giji.runtime_dependencies import ensure_no_prohibited_dependencies
+
+    ensure_no_prohibited_dependencies()
 
     # Windows credential backend and UI Automation typelib must be importable.
     keyring.backends.Windows.WinVaultKeyring()
@@ -143,28 +142,32 @@ def portable_self_test() -> None:
         assert manager.status(settings)["ready"], manager.status(settings)
         assert manager.whisper_path(settings).parent == Path(sys.executable).parent / "models"
 
-        # Decode PCM through the packaged PyAV DLLs, run both Whisper's encoder
-        # and decoder (VAD disabled), then exercise the packaged VAD model too.
+        # Decode only the app's PCM WAV format through the standard library.
+        # Direct decoding exercises both ONNX encoder and decoder without VAD;
+        # the production transcription path separately exercises Silero VAD.
         audio = folder / "system.wav"
         with wave.open(str(audio), "wb") as output:
             output.setnchannels(1)
             output.setsampwidth(2)
             output.setframerate(16000)
             output.writeframes(b"\0\0" * 16000 * 12)
-        with av.open(str(audio)) as container:
-            assert next(container.decode(audio=0)).samples > 0
-        model = WhisperModel(
-            str(manager.whisper_path(settings)), device="cpu", compute_type="int8",
-            cpu_threads=2, local_files_only=True,
+        shutil.copyfile(audio, folder / "microphone.wav")
+        with wave.open(str(audio), "rb") as source:
+            samples = np.frombuffer(source.readframes(source.getnframes()), dtype="<i2").astype(np.float32)
+            samples /= 32768.0
+        model_path = manager.whisper_path(settings)
+        recognizer = sherpa_onnx.OfflineRecognizer.from_whisper(
+            encoder=str(model_path / "encoder.int8.onnx"),
+            decoder=str(model_path / "decoder.int8.onnx"), tokens=str(model_path / "tokens.txt"),
+            num_threads=2, language="ja", task="transcribe", provider="cpu",
+            enable_segment_timestamps=True,
         )
-        segments, _ = model.transcribe(
-            str(audio), language="ja", beam_size=1, vad_filter=False,
-            condition_on_previous_text=False,
-        )
-        list(segments)
-        segments, _ = model.transcribe(str(audio), language="ja", vad_filter=True)
-        list(segments)
-        del model
+        stream = recognizer.create_stream()
+        stream.accept_waveform(16000, samples)
+        recognizer.decode_stream(stream)
+        assert isinstance(stream.result.text, str)
+        del stream, recognizer
+        assert Pipeline(manager, None)._transcribe(folder, settings) == []
 
         # Uses the same path as application diarization, with the real bundled
         # segmentation and embedding ONNX files. No accuracy claim from silence.
@@ -176,7 +179,7 @@ def portable_self_test() -> None:
     print(json.dumps({
         "portable_self_test": "passed",
         "python": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro} / x64",
-        "whisper": "small / CPU int8 / local files",
+        "whisper": "sherpa-onnx small / CPU int8 / stdlib PCM WAV / local files",
         "diarization": "bundled ONNX / CPU",
         "integrations": "native imports + UI Automation + Teams setup-neutral status/parser/cleanup imports",
     }))

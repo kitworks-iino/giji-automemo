@@ -10,7 +10,7 @@ on:
       tag:
         description: Existing release tag pointing at the verified build commit
         required: true
-        default: v0.4.0
+        default: v0.5.0
         type: string
 
 permissions:
@@ -130,9 +130,11 @@ jobs:
               for name in (
                   "GijiAutoMemo/GijiAutoMemo.exe",
                   "GijiAutoMemo/_internal/frontend/dist/index.html",
-                  "GijiAutoMemo/models/whisper-small/.complete",
+                  "GijiAutoMemo/models/whisper-onnx-small/.complete",
                   "GijiAutoMemo/models/diarization/.complete",
                   "GijiAutoMemo/licenses/.complete",
+                  "GijiAutoMemo/DEPENDENCY-ENVIRONMENT.json",
+                  "GijiAutoMemo/DEPENDENCY-AUDIT.json",
               ):
                   assert name in names, f"Missing verified build file: {name}"
               source_info = archive.getinfo("GijiAutoMemo/third-party-sources/SOURCES.json")
@@ -142,6 +144,7 @@ jobs:
               assert archive.testzip() is None, "ZIP integrity failure."
           print(f"Verified portable ZIP SHA-256: {actual}")
           PY
+          python scripts/audit_dependencies.py --archive portable/giji-automemo-windows-x64.zip
       - name: Attach the existing verified files to the existing release
         env:
           EXPECTED_COMMIT: ${{ steps.provenance.outputs.expected_commit }}

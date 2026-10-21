@@ -8,7 +8,25 @@ import json
 from pathlib import Path
 import shutil
 
-from giji.models import ModelManager
+from giji.models import DIARIZATION_REQUIRED_FILES, ModelManager, WHISPER_REQUIRED_FILES
+
+
+def copy_selected_models(manager: ModelManager, settings: dict, destination: Path) -> None:
+    """Copy only the selected ONNX runtime inputs, never an entire old cache."""
+    selected = [
+        (manager.whisper_path(settings), (*WHISPER_REQUIRED_FILES, "sources.json")),
+    ]
+    if settings.get("diarization", True):
+        selected.append((manager.segmentation_path.parent, (
+            *DIARIZATION_REQUIRED_FILES, "sources.json", "segmentation-LICENSE", "segmentation-README.md",
+        )))
+    for directory, filenames in selected:
+        target = destination / directory.name
+        target.mkdir(parents=True, exist_ok=True)
+        for name in filenames:
+            source = directory / name
+            if source.is_file() and not source.is_symlink():
+                shutil.copy2(source, target / name)
 
 
 def main() -> None:
@@ -24,7 +42,7 @@ def main() -> None:
     destination = args.destination / "models"
     if destination.exists():
         shutil.rmtree(destination)
-    shutil.copytree(manager.directory, destination, ignore=shutil.ignore_patterns(".cache", "*.lock"))
+    copy_selected_models(manager, settings, destination)
     manifest = []
     for path in sorted(destination.rglob("*")):
         if path.is_file():

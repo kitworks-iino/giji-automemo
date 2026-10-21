@@ -43,8 +43,12 @@ def setup_copy(tmp_path):
     scripts = tmp_path / "scripts"
     scripts.mkdir()
     source = Path(__file__).resolve().parents[1] / "scripts"
-    for name in ("setup.ps1", "check_python.py"):
+    for name in ("setup.ps1", "check_python.py", "audit_dependencies.py"):
         shutil.copyfile(source / name, scripts / name)
+    package = tmp_path / "giji"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    shutil.copyfile(source.parent / "giji" / "runtime_dependencies.py", package / "runtime_dependencies.py")
     return scripts / "setup.ps1"
 
 

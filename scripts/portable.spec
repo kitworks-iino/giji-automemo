@@ -42,8 +42,7 @@ hiddenimports = [
 # These packages load native extension modules, model data, DLLs or backends
 # dynamically. Explicit collection complements PyInstaller's standard hooks.
 for package in (
-    "faster_whisper", "ctranslate2", "sherpa_onnx", "av", "onnxruntime",
-    "tokenizers", "pyaudiowpatch", "pywinauto", "comtypes", "tzdata", "tzlocal", "websocket",
+    "sherpa_onnx", "pyaudiowpatch", "pywinauto", "comtypes", "tzdata", "tzlocal", "websocket",
 ):
     package_datas, package_binaries, package_hidden = collect_all(
         package,
@@ -55,13 +54,13 @@ for package in (
     binaries.extend(package_binaries)
     hiddenimports.extend(package_hidden)
 
-for package in ("scipy", "numpy", "av", "onnxruntime", "sherpa_onnx", "ctranslate2"):
+for package in ("scipy", "numpy", "sherpa_onnx"):
     datas, binaries = collect_delvewheel_libs_directory(
         package, datas=datas, binaries=binaries,
     )
 
 hiddenimports.extend(collect_submodules("comtypes.gen"))
-for distribution in ("keyring", "faster-whisper", "sherpa-onnx", "websocket-client", "giji-automemo"):
+for distribution in ("keyring", "sherpa-onnx", "sherpa-onnx-core", "websocket-client", "giji-automemo"):
     datas.extend(copy_metadata(distribution))
 
 a = Analysis(

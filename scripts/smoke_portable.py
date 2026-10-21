@@ -131,7 +131,7 @@ def _temporary_directory(prefix: str):
 
 def check(executable: Path) -> None:
     executable = executable.resolve()
-    environment = {**os.environ, "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1"}
+    environment = os.environ.copy()
     if os.name == "nt":
         windows = Path(os.environ["SystemRoot"])
         environment["PATH"] = os.pathsep.join([str(windows / "System32"), str(windows)])

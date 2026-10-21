@@ -81,6 +81,7 @@ def test_partial_settings_patch_does_not_reset_unrelated_settings(client, servic
     {"client_id": "not-a-client-id"},
     {"tenant_id": ""},
     {"whisper_model": "../../outside"},
+    {"whisper_model": "large-v3-turbo"},
     {"language": "ja; shell"},
     {"sync_interval_seconds": 1},
     {"end_grace_seconds": 0},

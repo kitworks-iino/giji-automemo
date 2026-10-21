@@ -12,6 +12,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from .models import WHISPER_MODELS
 from .service import GijiService, public_session
 
 
@@ -54,7 +55,7 @@ class SettingsPatch(BaseModel):
     @field_validator("whisper_model")
     @classmethod
     def model_name(cls, value):
-        if value not in ("tiny", "base", "small", "medium", "large-v3", "large-v3-turbo"):
+        if value not in WHISPER_MODELS:
             raise ValueError("対応モデルを指定してください")
         return value
 

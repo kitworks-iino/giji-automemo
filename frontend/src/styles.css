@@ -51,8 +51,7 @@ a {
 button:focus-visible,
 a:focus-visible,
 input:focus-visible,
-select:focus-visible,
-audio:focus-visible {
+select:focus-visible {
   outline: 3px solid #d9765f55;
   outline-offset: 3px;
 }
@@ -1608,6 +1607,7 @@ main {
 }
 .audio-track > div {
   flex: 1;
+  min-width: 0;
 }
 .audio-track h3 {
   font-size: 13px;
@@ -1620,11 +1620,71 @@ main {
   color: #acbf97;
   margin-bottom: 13px;
 }
-.audio-track audio {
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.pcm-player {
+  max-width: 700px;
+  border: 1px solid #e7eddf;
+  border-radius: 9px;
+  padding: 10px 12px;
+  background: #f8faf4;
+}
+.pcm-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.pcm-play {
+  padding: 7px !important;
+  flex: 0 0 32px;
+  justify-content: center;
+}
+.pcm-seek {
+  flex: 1 1 100px;
+  min-width: 60px;
+}
+.pcm-controls input[type="range"] {
   width: 100%;
-  max-width: 600px;
-  height: 37px;
-  display: block;
+  accent-color: #829e68;
+  cursor: pointer;
+}
+.pcm-time {
+  color: #879975;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.pcm-volume {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 84px;
+  color: #94a781;
+}
+.pcm-volume svg {
+  flex-shrink: 0;
+}
+.audio-track .pcm-message,
+.audio-track .pcm-error p {
+  margin: 8px 0 0;
+  font-size: 10px;
+  line-height: 1.8;
+}
+.audio-track .pcm-error p {
+  color: #b17b62;
+}
+.pcm-error .text-button {
+  margin-top: 5px;
 }
 .delete-area {
   padding: 25px 0 40px;
@@ -3179,8 +3239,14 @@ main {
   .audio-track p {
     font-size: 8px;
   }
-  .audio-track audio {
-    height: 34px;
+  .pcm-player {
+    padding: 9px;
+  }
+  .pcm-controls {
+    gap: 8px;
+  }
+  .pcm-time {
+    font-size: 9px;
   }
   .processing-strip {
     font-size: 8px;
