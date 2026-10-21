@@ -2,13 +2,13 @@
 
 v0.5のTeamsデスクトップ連携はプレビューです。実装済みと実機検証済みを区別し、過去版の確認結果も版ごとに記載しています。
 
-## v0.5：FFmpegを除いた構成への移行（検証中）
+## v0.5：FFmpegを除いた構成
 
 FFmpegを直接・間接・同梱ライブラリ経由でも利用しない条件に合わせ、文字起こしを
-sherpa-onnx 1.13.8のWhisper ONNXへ変更しています。音声の読込みはPCM16 WAVと
-Python標準ライブラリ・NumPy・SciPyを使い、画面の再生もPCMを直接扱う方式へ変更します。
-PyAV・faster-whisper・FFmpegのバイナリと対応ソースアーカイブを配布対象から除きます。
-この時点で確認済みの結果は以下です。Windows同梱版と公開ZIPの検証結果は完了後に追記します。
+sherpa-onnx 1.13.8のWhisper ONNXへ変更しました。音声の読込みはPCM16 WAVと
+Python標準ライブラリ・NumPy・SciPyを使い、画面の再生もPCMを直接扱う方式へ変更しました。
+PyAV・faster-whisper・FFmpegのバイナリと対応ソースアーカイブを配布対象から除外しました。
+確認済みの結果は以下です。会社PCでの実Teams・録音デバイスの確認とは区別しています。
 
 - FFmpeg関連パッケージを入れない新しいPython 3.13環境で全体テスト **453件成功・6件スキップ**。
   スキップはWindows専用と任意のChromium検証で、Starlette由来の既存警告が1件あります。Ruffも成功。
@@ -27,6 +27,56 @@ PyAV・faster-whisper・FFmpegのバイナリと対応ソースアーカイブ�
   禁止名を変更したPE依存、遅延インポート、内包アーカイブの検出も自動テストしています。
 - sherpa-onnx 1.13.8のWindows wheelのSHA・PE依存と上流ソースを確認。
   対象と限界は[音声処理の依存関係](audio-dependencies.md)に記載しています。
+
+### v0.5 Windows/Linux CI
+
+ソース `d5745a3152e7c022704e64d2421196892ebfbe49` の
+[Windows/Linux CI](https://github.com/kitworks-iino/giji-automemo/actions/runs/39542811683)
+が全ジョブ成功しました。
+
+| OS | Python | 成功 | スキップ | 依存検査したネイティブバイナリ |
+| --- | --- | ---: | ---: | ---: |
+| Windows | 3.11 | 455 | 4 | 375 |
+| Windows | 3.13 | 455 | 4 | 361 |
+| Ubuntu | 3.11 | 453 | 6 | 163 |
+| Ubuntu | 3.13 | 453 | 6 | 152 |
+
+各環境の依存検査、Ruff、PCM再生15件、TypeScript、本番ビルドが成功しました。
+両Windows環境で実PowerShellのPython選択・既存環境4ケースと、検証用プロセスツリーの
+終了も確認しています。これらはTeamsの実アカウントや録音ハードウェアの検証ではありません。
+
+### v0.5 Windows同梱版
+
+同じソースの[Windowsポータブルビルド](https://github.com/kitworks-iino/giji-automemo/actions/runs/39542835631)
+が成功しました。完成ZIPを別の一時フォルダーに展開し、そのEXEで検証しています。
+
+- Pythonテスト455件成功・4件スキップ、PCM再生15件、画面の本番ビルド、EXE生成が成功。
+- ビルド環境379ネイティブバイナリの依存検査と、完成フォルダー・内包ソースアーカイブ・ZIPの検査が成功。
+  `DEPENDENCY-ENVIRONMENT.json` と `DEPENDENCY-AUDIT.json` をZIPへ同梱しています。
+- 同梱Python 3.13.16 x64、Whisper smallのONNX encoder/decoder、Silero VAD、
+  話者分離ONNXを実行。PCM WAVの読込みはPython標準ライブラリを使用。
+- 同梱のモデルだけを利用し、利用者用モデルフォルダーが作られないことを確認。
+  認証付きローカルAPI・モデルの準備状態・画面・静的ファイル・Teamsの準備前状態も確認。
+- ネイティブのWindows UIA補助プロセス、プロセス所有者・ウィンドウ状態の確認、
+  検証用アプリと子プロセスの終了・一時ファイルの削除まで成功。
+- ZIPは **383,992,492 bytes**。成果物ID `12320517210`、
+  成果物名 `windows-portable-39542835631`。
+
+[公開処理](https://github.com/kitworks-iino/giji-automemo/actions/runs/39543495459)でも、
+タグとビルド・成果物ID・SHA-256を照合し、11,156ファイル・226ネイティブバイナリ・
+4内包アーカイブを再検査しました。
+[v0.5.0リリース](https://github.com/kitworks-iino/giji-automemo/releases/tag/v0.5.0)の公開後、
+GitHub公開APIでZIPのサイズとSHA-256が検証済み成果物に一致することも確認しています。
+
+ZIPのSHA-256：
+
+```text
+be688a4da621b3cd4c0148ba2949839dd9023d065231fee34ecff22650cafc61
+```
+
+Windowsでのモデル実行は無音を使った依存・動作確認で、認識や話者分離の精度評価ではありません。
+会社PCの実Teamsアカウント、マイク・ヘッドセット、最小化・トレイ格納での予定取得は未検証です。
+Teamsが予定表を破棄・休止する場合も常時取得できる要件は満たせていません。
 
 **v0.2・v0.3の公開ZIP、および未公開v0.4のビルド成果物はFFmpegを含みます。**
 これらは今回の会社ポリシーに対応していません。v0.4はタグのみ作成済みで、
