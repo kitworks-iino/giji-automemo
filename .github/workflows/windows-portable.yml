@@ -66,7 +66,7 @@ jobs:
         run: |
           python -m ruff check .
           if ($LASTEXITCODE -ne 0) { throw "Lint failed." }
-          python -m pytest -q
+          python -m pytest -vv
           if ($LASTEXITCODE -ne 0) { throw "Tests failed." }
       - name: Build, collect licenses and sources, and test the full portable ZIP
         shell: pwsh

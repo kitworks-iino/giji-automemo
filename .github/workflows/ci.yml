@@ -11,6 +11,7 @@ permissions:
 jobs:
   python:
     name: Python / ${{ matrix.os }}
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -28,7 +29,7 @@ jobs:
       - name: Lint
         run: python -m ruff check .
       - name: Test
-        run: python -m pytest -q
+        run: python -m pytest -vv
 
   frontend:
     name: Frontend
