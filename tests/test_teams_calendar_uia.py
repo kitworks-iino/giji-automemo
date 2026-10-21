@@ -179,7 +179,8 @@ def test_frozen_reader_dispatch_uses_same_executable(monkeypatch):
     assert runner.call_args.args[0] == [sys.executable, "--teams-uia-calendar-worker"]
 
 
-@pytest.mark.parametrize("raw", ["private unparseable", "[]", "null", "{}", "x" * (MAX_OUTPUT + 1)])
+@pytest.mark.parametrize("raw", ["private unparseable", "[]", "null", "{}", "x" * (MAX_OUTPUT + 1)],
+                         ids=["invalid-json", "array", "null", "empty-object", "over-limit"])
 def test_malformed_worker_output_never_reaches_public_error(raw):
     calendar = TeamsUIACalendar(runner=make_runner(raw=raw))
     with pytest.raises(TeamsUIACalendarError, match="読み取れません") as failure:
