@@ -4,10 +4,77 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 import sys
 import tempfile
 import wave
+
+
+def teams_runtime_self_test(folder: Path) -> None:
+    """Exercise packaged Teams dependencies without enabling or probing CDP."""
+    import websocket
+    import win32api
+    import win32con
+    import win32security
+    from tzlocal import get_localzone_name
+    from zoneinfo import ZoneInfo
+
+    from giji.teams_calendar import TeamsDesktopCalendar
+    from giji.teams_calendar_parser import parse_calendar_snapshot
+    from giji.teams_calendar_uia import TeamsUIACalendar
+    from giji.teams_connection import (
+        JOURNAL_NAME,
+        TeamsConnectionManager,
+        _WindowsBackend,
+        cleanup_main,
+        validate_cdp_url,
+    )
+
+    assert websocket.create_connection and websocket.__version__
+    assert win32security.GetNamedSecurityInfo and win32api.GetCurrentProcess
+    assert win32con.TOKEN_QUERY
+    assert callable(cleanup_main), "The detached cleanup helper must be included."
+    assert TeamsDesktopCalendar
+    # Windows local-zone mapping and IANA database are both included. Merely
+    # reading the configured zone does not change Windows or Teams settings.
+    assert ZoneInfo(get_localzone_name())
+    assert TeamsUIACalendar
+    assert validate_cdp_url("http://127.0.0.1:49152/json/list", "http://127.0.0.1:49152")
+    assert not validate_cdp_url("http://example.com:49152/json/list", "http://127.0.0.1:49152")
+
+    # Exercise the native process/SID APIs used to establish Teams ownership on
+    # a harmless process we own. Hosted CI has no installed Teams package, so
+    # its package ancestry is covered separately by synthetic ownership tests.
+    backend = _WindowsBackend()
+    current = backend._process(os.getpid())
+    assert current.pid == os.getpid() and current.owner == backend.owner()
+    assert Path(current.executable).resolve() == Path(sys.executable).resolve()
+    reader = TeamsUIACalendar()
+    assert reader.status()["state"] == "not_synced"
+    reader.close()
+
+    # A fresh temporary directory has no recovery journal. Constructor, status,
+    # and close therefore perform no policy writes, no launch, and no network.
+    data_dir = folder / "teams-neutral"
+    manager = TeamsConnectionManager(data_dir)
+    neutral = manager.status()
+    assert neutral["state"] == "needs_setup" and not neutral["connected"]
+    assert neutral["policy_restored"] and not neutral["debug_active"]
+    closed = manager.close()
+    assert not closed["connected"] and closed["policy_restored"]
+    assert not (data_dir / JOURNAL_NAME).exists()
+
+    # Synthetic visible text tests the bundled parser/timezone database only;
+    # it makes no claim about compatibility with a particular live Teams build.
+    parsed = parse_calendar_snapshot({
+        "timezone": "Asia/Tokyo", "date_texts": ["2026年10月21日"],
+        "day_view": True, "empty_text": "", "events": [
+            {"title": "Synthetic smoke", "label": "10:00から11:00"},
+        ],
+    }, now=datetime(2026, 10, 21, 3, tzinfo=timezone.utc))
+    assert parsed["meetings"][0]["start"] == "2026-10-21T01:00:00+00:00"
+    assert parsed["coverage"] == "visible_only"
 
 
 def portable_self_test() -> None:
@@ -56,6 +123,7 @@ def portable_self_test() -> None:
 
     with tempfile.TemporaryDirectory(prefix="giji-portable-test-") as temporary:
         folder = Path(temporary)
+        teams_runtime_self_test(folder)
         manager = ModelManager(folder)
         settings = {"whisper_model": "small", "diarization": True, "language": "ja"}
         assert manager.status(settings)["ready"], manager.status(settings)
@@ -95,7 +163,7 @@ def portable_self_test() -> None:
         "portable_self_test": "passed",
         "whisper": "small / CPU int8 / local files",
         "diarization": "bundled ONNX / CPU",
-        "integrations": "native imports + UI Automation type library",
+        "integrations": "native imports + UI Automation + Teams setup-neutral status/parser/cleanup imports",
     }))
 
 

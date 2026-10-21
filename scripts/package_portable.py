@@ -26,7 +26,12 @@ def main() -> None:
     with zipfile.ZipFile(args.output, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
         for path in sorted(args.directory.rglob("*")):
             if path.is_file():
-                if path.name in {"launch-url.txt", ".instance.lock"} or path.suffix in {".wav", ".sqlite3"}:
+                if (
+                    path.name in {"launch-url.txt", ".instance.lock", "teams-connection-journal.json"}
+                    or path.name.startswith("teams-connection-journal.json.")
+                    or path.name.startswith("teams-connection-ready-")
+                    or path.suffix in {".wav", ".sqlite3"}
+                ):
                     raise RuntimeError(f"Unexpected private runtime file in the distribution: {path.name}")
                 archive.write(path, "GijiAutoMemo/" + path.relative_to(args.directory).as_posix())
     if args.output.stat().st_size >= 2 * 1024**3:

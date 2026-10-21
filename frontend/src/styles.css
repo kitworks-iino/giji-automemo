@@ -3273,6 +3273,284 @@ main {
   border-color: #bacbab;
   background: #f4f7ee;
 }
+.calendar-source-option.optional-calendar-source {
+  margin-top: 20px;
+}
+.calendar-source-option > .teams-source-icon {
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: 7px;
+  color: #fff;
+  background: #8683ac;
+  font-size: 16px;
+  font-weight: 700;
+}
+.preview-badge {
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 8px;
+  font-weight: 500;
+  color: #9285ab;
+  background: #eeebf5;
+  white-space: nowrap;
+}
+.calendar-coverage,
+.teams-preview-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 14px 15px;
+  margin-bottom: 16px;
+  background: #f1eff7;
+  border: 1px solid #e8e3f0;
+  border-radius: 8px;
+  color: #9488a9;
+}
+.calendar-coverage > svg,
+.teams-preview-note > svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.calendar-coverage strong,
+.teams-preview-note strong {
+  color: #80718e;
+  font-size: 10px;
+  line-height: 1.8;
+  font-weight: 600;
+}
+.calendar-coverage p,
+.teams-preview-note p {
+  font-size: 9px;
+  line-height: 1.9;
+  margin-top: 4px;
+}
+.calendar-source-warning {
+  font-size: 9px;
+  line-height: 1.9;
+  margin: 0 2px 12px;
+  color: #a08c6d;
+}
+.manual-recording-link {
+  display: flex;
+  margin-left: auto;
+  margin-right: auto;
+}
+.teams-setup {
+  padding-top: 17px;
+}
+.teams-visible-calendar .no-registration-note {
+  margin-top: 1px;
+  align-items: flex-start;
+  line-height: 1.8;
+}
+.teams-visible-calendar .no-registration-note svg {
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+.teams-mode-options {
+  display: grid;
+  gap: 10px;
+}
+.teams-mode-options .calendar-source-option {
+  padding: 13px;
+}
+.teams-mode-options .calendar-source-option strong {
+  flex-wrap: wrap;
+}
+.teams-mode-options .calendar-source-option small {
+  line-height: 1.8;
+}
+.teams-setup-steps {
+  list-style: none;
+  margin: 20px 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.teams-setup-steps li {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+}
+.teams-setup-steps li > span {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  margin-top: 1px;
+  border-radius: 50%;
+  background: #f0f3e9;
+  color: #91a57a;
+  font-size: 10px;
+}
+.teams-setup-steps p {
+  color: #89977e;
+  font-size: 10px;
+  line-height: 1.9;
+}
+.teams-setup-steps strong {
+  display: block;
+  color: #687c5a;
+  font-weight: 550;
+  margin-bottom: 2px;
+}
+.teams-access-notice,
+.teams-other-source-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  background: #faf6e9;
+  border: 1px solid #eee4c9;
+  border-radius: 8px;
+  padding: 16px;
+  color: #ac986b;
+  margin-bottom: 17px;
+}
+.teams-other-source-notice {
+  margin-top: 17px;
+}
+.teams-access-notice > svg,
+.teams-other-source-notice > svg {
+  flex-shrink: 0;
+}
+.teams-access-notice strong,
+.teams-other-source-notice strong {
+  font-size: 10px;
+  font-weight: 600;
+  color: #98865d;
+  line-height: 1.8;
+}
+.teams-access-notice p,
+.teams-other-source-notice p {
+  font-size: 9px;
+  line-height: 1.9;
+  margin-top: 7px;
+}
+.teams-other-source-notice .text-button {
+  margin-top: 9px;
+  color: #a58a60;
+}
+.teams-connection-status {
+  padding: 15px;
+  border: 1px solid #e5ebde;
+  border-radius: 8px;
+  background: #f8faf3;
+  margin-bottom: 16px;
+}
+.teams-status-heading {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+.teams-status-heading strong {
+  font-size: 11px;
+  color: #849773;
+  font-weight: 600;
+}
+.teams-connection-status.connected .tiny-dot {
+  background: #7fa26b;
+}
+.teams-connection-status p {
+  font-size: 10px;
+  line-height: 1.9;
+  margin-top: 9px;
+  color: #8b9c7d;
+  overflow-wrap: anywhere;
+}
+.teams-connection-status small {
+  display: block;
+  margin-top: 8px;
+  font-size: 9px;
+  color: #9aab88;
+}
+.teams-connection-status .teams-restart-note {
+  color: #ae8b66;
+}
+.teams-call-notice {
+  color: #ad8966;
+  font-size: 10px;
+  line-height: 1.9;
+  margin: 0 0 16px;
+}
+.teams-setup-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.teams-disconnect {
+  margin-left: auto;
+  color: #ab8872;
+}
+.teams-fallback-note {
+  margin-top: 17px;
+  margin-bottom: 0;
+}
+@media (max-width: 740px) {
+  .teams-setup-actions .button {
+    font-size: 9px;
+    padding: 8px 10px;
+  }
+  .teams-disconnect {
+    font-size: 9px;
+  }
+}
+@media (max-width: 480px) {
+  .calendar-source-option > .teams-source-icon {
+    display: none;
+  }
+  .calendar-coverage,
+  .teams-preview-note,
+  .teams-access-notice,
+  .teams-other-source-notice {
+    padding: 12px;
+    gap: 7px;
+  }
+  .calendar-coverage strong,
+  .teams-preview-note strong,
+  .teams-access-notice strong,
+  .teams-other-source-notice strong {
+    font-size: 9px;
+  }
+  .calendar-coverage p,
+  .teams-preview-note p,
+  .teams-access-notice p,
+  .teams-other-source-notice p {
+    font-size: 8px;
+  }
+  .teams-setup-steps p {
+    font-size: 9px;
+  }
+  .teams-setup-actions {
+    gap: 10px 7px;
+  }
+  .teams-setup-actions .button {
+    font-size: 8px;
+    min-height: 33px;
+    padding: 7px 8px;
+    gap: 4px;
+  }
+  .teams-disconnect {
+    padding-top: 4px;
+    width: 100%;
+  }
+  .teams-connection-status {
+    padding: 12px;
+  }
+  .teams-connection-status p,
+  .teams-call-notice {
+    font-size: 9px;
+  }
+  .teams-status-heading .connection-pill {
+    margin-left: 0;
+  }
+}
 .calendar-source-option > input {
   width: 15px;
   height: 15px;

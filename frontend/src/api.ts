@@ -95,7 +95,8 @@ export type Session = {
   audio_urls?: { microphone?: string; system?: string };
 };
 export type Settings = {
-  calendar_source: "outlook_desktop" | "graph";
+  calendar_source: "teams_desktop" | "outlook_desktop" | "graph";
+  teams_calendar_mode: "uia" | "cdp";
   client_id: string;
   tenant_id: string;
   auto_record: boolean;
@@ -120,12 +121,34 @@ export type MicrosoftConnection = {
     | "disconnected"
     | "error"
     | "unconfigured"
+    | "needs_setup"
+    | "waiting_for_restart"
+    | "blocked"
+    | "unavailable"
     | "syncing"
     | "authenticating";
-  provider: "outlook_desktop" | "graph";
+  provider: "teams_desktop" | "outlook_desktop" | "graph";
   connected: boolean;
   detail: string;
   account?: string | null;
+  coverage?: string;
+  warnings?: string[];
+};
+export type TeamsConnection = {
+  provider: "teams_desktop";
+  state:
+    | "needs_setup"
+    | "waiting_for_restart"
+    | "connected"
+    | "blocked"
+    | "unavailable"
+    | "disconnected";
+  connected: boolean;
+  detail: string;
+  needs_restart: boolean;
+  policy_restored: boolean;
+  debug_active: boolean;
+  expires_at: number | null;
 };
 export type Health = {
   platform: string;
@@ -146,6 +169,8 @@ export type Snapshot = {
   sessions: Session[];
   settings: Settings;
   microsoft?: MicrosoftConnection;
+  teams_connection?: TeamsConnection;
+  armed_meeting_id?: string | null;
   health: Health;
   now: string;
 };

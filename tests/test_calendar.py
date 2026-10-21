@@ -38,3 +38,39 @@ def test_explicit_graph_selection_remains_available():
     router = CalendarRouter(Mock(), lambda: settings, desktop=desktop, graph=graph)
     assert router.fetch_today(settings) == [{"id": "remote"}]
     assert not desktop.mock_calls
+
+
+def test_teams_default_never_touches_outlook_or_graph():
+    settings = {}
+    graph, desktop, teams = Mock(), Mock(), Mock()
+    teams.fetch_today.return_value = [{"id": "screen-event"}]
+    router = CalendarRouter(Mock(), lambda: settings, desktop=desktop, graph=graph, teams_uia=teams)
+    assert router.fetch_today(settings) == [{"id": "screen-event"}]
+    assert not graph.mock_calls
+    assert not desktop.mock_calls
+
+
+def test_teams_read_failure_is_public_and_never_falls_back():
+    from giji.microsoft import CalendarError
+    from giji.teams_calendar_uia import TeamsUIACalendarError
+
+    graph, desktop, teams = Mock(), Mock(), Mock()
+    teams.fetch_today.side_effect = TeamsUIACalendarError("Teamsのカレンダーを開いてください。")
+    router = CalendarRouter(Mock(), lambda: {}, desktop=desktop, graph=graph, teams_uia=teams)
+    with pytest.raises(CalendarError, match="Teams"):
+        router.fetch_today({})
+    assert not graph.mock_calls
+    assert not desktop.mock_calls
+
+
+def test_teams_cdp_is_only_used_after_explicit_mode_selection():
+    uia, cdp = Mock(), Mock()
+    settings = {"calendar_source": "teams_desktop", "teams_calendar_mode": "uia"}
+    uia.fetch_today.return_value = [{"id": "visible-uia"}]
+    cdp.fetch_today.return_value = [{"id": "visible-cdp"}]
+    router = CalendarRouter(Mock(), lambda: settings, teams=cdp, teams_uia=uia)
+    assert router.fetch_today(settings) == [{"id": "visible-uia"}]
+    assert not cdp.mock_calls
+    settings["teams_calendar_mode"] = "cdp"
+    assert router.fetch_today(settings) == [{"id": "visible-cdp"}]
+    assert uia.fetch_today.call_count == 1

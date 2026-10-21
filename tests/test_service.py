@@ -28,6 +28,17 @@ def service_fixture(tmp_path):
     calendar = Mock()
     calendar.is_connected.return_value = False
     calendar.fetch_today.return_value = []
+    calendar.status.return_value = {"coverage": "complete", "warnings": []}
+    teams_connection = Mock()
+    teams_connection.status.return_value = {
+        "state": "needs_setup", "connected": False, "detail": "Teams連携を準備してください。",
+    }
+    teams_connection.prepare.return_value = {
+        "state": "waiting_for_restart", "detail": "Teamsを完全終了して起動してください。",
+    }
+    teams_connection.disconnect.return_value = {
+        "state": "disconnected", "detail": "Teams連携を解除しました。",
+    }
     detector = Mock()
     detector.poll.return_value = {"state": "unknown", "detail": "test"}
     recorder = Mock()
@@ -41,7 +52,7 @@ def service_fixture(tmp_path):
     store = Store(tmp_path / "data")
     result = GijiService(
         store, MemorySecrets(), calendar=calendar, detector=detector,
-        recorder=recorder, models=models, pipeline=Mock(),
+        recorder=recorder, models=models, pipeline=Mock(), teams_connection=teams_connection,
     )
     yield result
     store.close()
@@ -279,7 +290,8 @@ async def test_failed_sync_keeps_previous_calendar_and_reports_error(service):
 
 @pytest.mark.asyncio
 async def test_default_desktop_sync_does_not_require_microsoft_login(service):
-    assert service.store.settings()["calendar_source"] == "outlook_desktop"
+    assert service.store.settings()["calendar_source"] == "teams_desktop"
+    assert service.store.settings()["teams_calendar_mode"] == "uia"
     assert service.store.settings()["client_id"] == ""
     service.calendar.is_connected.return_value = False
     meeting = {"id": "desktop-meeting", "start": "2026-10-20T01:00:00+00:00"}
@@ -288,8 +300,9 @@ async def test_default_desktop_sync_does_not_require_microsoft_login(service):
     service.calendar.fetch_today.assert_called_once()
     assert service.store.meetings() == [meeting]
     assert service.snapshot()["microsoft"]["connected"] is True
-    assert service.snapshot()["microsoft"]["provider"] == "outlook_desktop"
+    assert service.snapshot()["microsoft"]["provider"] == "teams_desktop"
     assert service.public_settings()["has_microsoft_login"] is False
+    service.teams_connection.prepare.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -369,3 +382,117 @@ async def test_logout_clears_calendar_and_credentials(service):
     service.calendar.logout.assert_called_once()
     assert service.store.meetings() == []
     assert service.health["calendar"]["last_sync"] is None
+
+
+def current_meeting(identifier: str) -> dict:
+    now = datetime.now(timezone.utc)
+    return {"id": identifier, "title": identifier, "start": now.isoformat(),
+            "end": (now + timedelta(minutes=30)).isoformat(), "join_url": "", "cancelled": False}
+
+
+@pytest.mark.asyncio
+async def test_partial_teams_calendar_keeps_previous_observations_and_exposes_coverage(service):
+    previous = current_meeting("off-screen")
+    service.store.add_meeting(previous)
+    service.calendar.status.return_value = {
+        "coverage": "visible_only", "warnings": ["画面外の予定は未取得です"], "detail": "表示中の予定を取得",
+    }
+    service.calendar.fetch_today.return_value = [
+        {**current_meeting("visible"), "join_url": "https://teams.microsoft.com/meet/123"}]
+    service.health["teams"]["state"] = "in_meeting"
+    await service.sync()
+    assert {m["id"] for m in service.store.meetings()} == {"off-screen", "visible"}
+    assert "_teams_call_state" not in service.calendar.fetch_today.call_args.args[0]
+    assert service.snapshot()["microsoft"]["coverage"] == "visible_only"
+    assert service.snapshot()["microsoft"]["warnings"] == ["画面外の予定は未取得です"]
+    assert {m["id"] for m in service.matchable_meetings()} == {"visible"}
+    service.calendar.fetch_today.return_value = []
+    await service.sync()
+    assert {m["id"] for m in service.store.meetings()} == {"off-screen", "visible"}
+    assert service.matchable_meetings() == []
+
+
+@pytest.mark.asyncio
+async def test_complete_calendar_removes_deleted_meetings(service):
+    service.store.update_settings({"calendar_source": "outlook_desktop"})
+    service.store.add_meeting(current_meeting("cancelled-remotely"))
+    service.calendar.fetch_today.return_value = []
+    await service.sync()
+    assert service.store.meetings() == []
+
+
+@pytest.mark.asyncio
+async def test_teams_preparation_is_explicit_and_refuses_active_calls(service):
+    service.snapshot()
+    service.teams_connection.prepare.assert_not_called()
+    with pytest.raises(ValueError, match="通常の画面読み取りには準備不要"):
+        await service.prepare_teams()
+    service.store.update_settings({"teams_calendar_mode": "cdp"})
+    service.health["teams"]["state"] = "in_meeting"
+    with pytest.raises(ValueError, match="会議"):
+        await service.prepare_teams()
+    service.teams_connection.prepare.assert_not_called()
+    service.health["teams"]["state"] = "unknown"
+    result = await service.prepare_teams()
+    assert result["state"] == "waiting_for_restart"
+    service.teams_connection.prepare.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_disconnect_teams_retains_live_recording_and_clears_calendar(service):
+    service.store.update_settings({"recording_consent": True})
+    service.store.add_meeting(current_meeting("live"))
+    service.arm_meeting("live")
+    started = await service.start_recording(title="会議")
+    result = await service.disconnect_teams()
+    assert result["state"] == "disconnected"
+    assert service.store.meetings() == []
+    assert service.armed_id is None
+    assert service.active_id == started["id"]
+    service.recorder.stop.assert_not_called()
+
+
+def test_meeting_can_be_selected_without_join_link(service):
+    service.store.add_meeting(current_meeting("teams-screen"))
+    service.arm_meeting("teams-screen")
+    assert service.snapshot()["armed_meeting_id"] == "teams-screen"
+    with pytest.raises(ValueError):
+        service.arm_meeting("missing")
+
+
+@pytest.mark.asyncio
+async def test_calendar_appointment_without_teams_evidence_is_not_auto_bound(service):
+    service.calendar.status.return_value = {"coverage": "visible_only", "warnings": []}
+    service.calendar.fetch_today.return_value = [current_meeting("unknown-kind")]
+    await service.sync()
+    assert service.matchable_meetings() == []
+    service.arm_meeting("unknown-kind")
+    assert service.matchable_meetings()[0]["id"] == "unknown-kind"
+
+
+@pytest.mark.asyncio
+async def test_changing_away_from_teams_revokes_connection(service):
+    await service.update_settings({"calendar_source": "outlook_desktop"})
+    service.teams_connection.disconnect.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_changing_teams_mode_clears_old_provider_cache_and_restores_cdp(service):
+    service.store.update_settings({"teams_calendar_mode": "cdp"})
+    service.store.add_meeting(current_meeting("cdp-event"))
+    service.arm_meeting("cdp-event")
+    await service.update_settings({"teams_calendar_mode": "uia"})
+    service.teams_connection.disconnect.assert_called_once()
+    assert service.store.meetings() == []
+    assert service.armed_id is None
+
+
+@pytest.mark.asyncio
+async def test_cleanup_error_does_not_lose_active_audio(service):
+    service.store.update_settings({"recording_consent": True})
+    started = await service.start_recording(title="保存する会議")
+    service.teams_connection.close.side_effect = RuntimeError("private registry error")
+    await service.close()
+    assert service.store.session(started["id"])["status"] == "interrupted"
+    assert service.active_id is None
+    assert "private registry error" not in str(service.health)

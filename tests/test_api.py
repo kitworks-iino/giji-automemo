@@ -5,7 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from giji.api import create_app
-from test_service import saved_session, service_fixture  # noqa: F401
+from test_service import current_meeting, saved_session, service_fixture  # noqa: F401
 
 
 PORT = 48888
@@ -76,6 +76,7 @@ def test_partial_settings_patch_does_not_reset_unrelated_settings(client, servic
 
 @pytest.mark.parametrize("patch", [
     {"calendar_source": "private-teams-endpoint"},
+    {"teams_calendar_mode": "private-api"},
     {"unknown_setting": True},
     {"client_id": "not-a-client-id"},
     {"tenant_id": ""},
@@ -203,14 +204,31 @@ def test_join_rejects_nonstandard_or_spoofed_teams_urls(client, service, url):
 
 def test_valid_join_arms_the_chosen_meeting(client, service):
     url = "https://teams.microsoft.com/l/meetup-join/test"
-    service.store.add_meeting({
-        "id": "join-test", "title": "会議", "start": "2026-10-20T01:00:00+00:00",
-        "end": "2026-10-20T02:00:00+00:00", "join_url": url, "cancelled": False,
-    })
+    service.store.add_meeting({**current_meeting("join-test"), "join_url": url})
     response = client.post("/api/meetings/join-test/join", headers=auth())
     assert response.status_code == 200
     assert response.json()["join_url"] == url
     assert service.armed_id == "join-test"
+
+
+def test_select_meeting_without_join_url(client, service):
+    service.store.add_meeting(current_meeting("teams-only"))
+    assert client.post("/api/meetings/teams-only/arm", headers=auth()).status_code == 200
+    assert client.get("/api/snapshot", headers=auth()).json()["armed_meeting_id"] == "teams-only"
+    assert client.post("/api/meetings/teams-only/join", headers=auth()).status_code == 400
+
+
+def test_teams_setup_endpoints_require_local_authentication(client, service):
+    assert client.post("/api/teams/prepare").status_code == 401
+    service.teams_connection.prepare.assert_not_called()
+    assert client.post("/api/teams/prepare", headers=auth()).status_code == 400
+    service.store.update_settings({"teams_calendar_mode": "cdp"})
+    prepared = client.post("/api/teams/prepare", headers=auth())
+    assert prepared.status_code == 200
+    assert prepared.json()["state"] == "waiting_for_restart"
+    disconnected = client.post("/api/teams/disconnect", headers=auth())
+    assert disconnected.status_code == 200
+    assert disconnected.json()["state"] == "disconnected"
 
 
 def test_demo_is_explicit_and_cannot_be_recorded_or_joined(client):

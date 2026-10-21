@@ -25,16 +25,24 @@ hiddenimports = [
     "win32com.client",
     "win32com.server",
     "win32timezone",
+    "win32security",
+    "win32api",
+    "win32con",
     "pythoncom",
     "pywintypes",
     "comtypes.gen.UIAutomationClient",
+    # The recovery watchdog is launched through a CLI switch in this same exe.
+    "giji.teams_connection",
+    "giji.teams_calendar",
+    "giji.teams_calendar_parser",
+    "giji.teams_calendar_uia",
 ]
 
 # These packages load native extension modules, model data, DLLs or backends
 # dynamically. Explicit collection complements PyInstaller's standard hooks.
 for package in (
     "faster_whisper", "ctranslate2", "sherpa_onnx", "av", "onnxruntime",
-    "tokenizers", "pyaudiowpatch", "pywinauto", "comtypes", "tzdata",
+    "tokenizers", "pyaudiowpatch", "pywinauto", "comtypes", "tzdata", "tzlocal", "websocket",
 ):
     package_datas, package_binaries, package_hidden = collect_all(
         package,
@@ -52,7 +60,7 @@ for package in ("scipy", "numpy", "av", "onnxruntime", "sherpa_onnx", "ctranslat
     )
 
 hiddenimports.extend(collect_submodules("comtypes.gen"))
-for distribution in ("keyring", "faster-whisper", "sherpa-onnx", "giji-automemo"):
+for distribution in ("keyring", "faster-whisper", "sherpa-onnx", "websocket-client", "giji-automemo"):
     datas.extend(copy_metadata(distribution))
 
 a = Analysis(

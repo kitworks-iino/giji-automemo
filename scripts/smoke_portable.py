@@ -22,6 +22,28 @@ def check(executable: Path) -> None:
     if os.name == "nt":
         windows = Path(os.environ["SystemRoot"])
         environment["PATH"] = os.pathsep.join([str(windows / "System32"), str(windows)])
+    # Invalid arguments stop before any journal/registry access. This verifies
+    # the cleanup CLI dispatch is packaged without changing the runner's policy.
+    cleanup = subprocess.run(
+        [str(executable), "--teams-connection-cleanup"], capture_output=True,
+        text=True, timeout=30, env=environment, check=False,
+    )
+    assert cleanup.returncode == 2 and not cleanup.stdout and not cleanup.stderr, (
+        "The packaged Teams cleanup entry point did not reject invalid arguments cleanly."
+    )
+    if environment.get("GITHUB_ACTIONS") == "true":
+        # Hosted Windows runners have no signed-in Teams. Exercise the real
+        # bounded UIA worker there; never enumerate a local builder's Teams.
+        uia = subprocess.run(
+            [str(executable), "--teams-uia-calendar-worker"], capture_output=True,
+            text=True, encoding="utf-8", timeout=20, env=environment, check=False,
+        )
+        assert len(uia.stdout) <= 4096 and not uia.stderr, "Unexpected UIA worker diagnostics."
+        result = json.loads(uia.stdout)
+        assert uia.returncode == 1 and result.get("ok") is False
+        assert result.get("error") in {"not_running", "unreadable", "calendar"}, (
+            "The native Teams UIA worker failed to load its packaged dependencies."
+        )
     subprocess.run(
         [str(executable), "--portable-self-test"], check=True, timeout=900, env=environment,
     )
@@ -68,7 +90,14 @@ def check(executable: Path) -> None:
                         assert response.status == 200 and response.read(1)
                 assert snapshot["health"]["models"]["ready"], "The bundled models are not ready."
                 assert snapshot["sessions"], "Demo data was not returned by the packaged app."
-                print("Portable smoke passed: frozen inference, local API, bundled models and compiled UI.")
+                assert snapshot["settings"]["calendar_source"] == "teams_desktop"
+                assert snapshot["settings"]["teams_calendar_mode"] == "uia"
+                assert snapshot["teams_connection"]["state"] == "needs_setup"
+                assert not snapshot["teams_connection"]["connected"]
+                assert not snapshot["teams_connection"]["debug_active"]
+                assert snapshot["teams_connection"]["policy_restored"]
+                assert not (folder / "data" / "teams-connection-journal.json").exists()
+                print("Portable smoke passed: frozen inference, setup-neutral Teams, local API, bundled models and UI.")
             except Exception:
                 failed = True
                 raise

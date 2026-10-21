@@ -1,6 +1,8 @@
-# Outlook連携の設定
+# 代替の予定連携：Outlook・Microsoft Graph
 
-標準設定は、このPCにある **Outlook（クラシック）** の予定表を読み取る方式です。**Microsoft Entraへのアプリ登録、クライアントID、テナントID、Microsoft用APIキーは不要です。** 普段使っているOutlookのプロファイルを利用します。
+v0.3の標準は [Teamsデスクトップ連携](teams-desktop.md) です。このページは、詳細設定で **Outlook（クラシック）** または既存の **Microsoft Graph** 接続を自分で選ぶ場合の説明です。Teamsの取得失敗から自動で切り替わることはありません。
+
+Outlook方式にはMicrosoft Entraへのアプリ登録、クライアントID、テナントID、Microsoft用APIキーは不要です。普段使っているOutlookのプロファイルを利用します。
 
 ## 最初に確認すること
 
@@ -29,7 +31,7 @@ Outlookは、外部アプリによる本文・主催者・参加者情報など�
 | 状況 | 確認点 |
 | --- | --- |
 | Outlookを検出できない | クラシック版がインストール・起動されているか。同じWindowsユーザーで起動しているか |
-| 「新しいOutlook」だけを使っている | 標準の連携対象外。クラシック版を利用できるか確認 |
+| 「新しいOutlook」だけを使っている | Outlook COM連携の対象外。クラシック版を利用できるか確認 |
 | 同期が応答待ち・失敗になる | Outlookのサインイン、プロファイル選択、読み取り確認の画面が開いていないか |
 | 会議が0件 | Windowsの日付・タイムゾーン、Outlookの既定予定表、当日のTeams会議があるか |
 | 特定の会議だけ出ない | 別の予定表・別アカウントか、取消済みか、有効なTeams参加情報があるか |
@@ -37,12 +39,6 @@ Outlookは、外部アプリによる本文・主催者・参加者情報など�
 | 組織の設定で拒否される | 管理者へ確認。アプリから制限を解除する機能はない |
 
 予定を取得できなくても、録音デバイスと録音の同意を設定すれば手動録音は利用できます。
-
-## TeamsのCDPを使わない理由
-
-TeamsはWebView2を利用するため、デバッグ接続のCDP経由で画面を読む構成も技術的には可能です。しかし、Microsoftの手順ではデバッグ引数の設定とホストアプリの再起動が必要です。接続後も予定取得がTeamsの画面構造や表示状態に依存します。このアプリでは、既存のクラシック版Outlookから構造化された予定を取得する方式を標準にしています。[WebView2の接続手順](https://learn.microsoft.com/en-us/microsoft-edge/web-platform/devtools-mcp-server#auto-connect-to-a-webview2-instance)、[Outlookの繰り返し予定取得](https://learn.microsoft.com/en-us/office/vba/api/outlook.items.includerecurrences)
-
-Teamsのデバッグポート、起動引数、レジストリは変更しません。Teams画面の読み取りは、録音の参加・退出検知にだけ使います。
 
 ## 任意：既存のMicrosoft Graph接続を使う
 
@@ -58,4 +54,4 @@ Teamsのデバッグポート、起動引数、レジストリは変更しませ
 
 Graph版は `calendarView` と `onlineMeeting.joinUrl` を利用します。条件付きアクセスやデバイスコードフローの制限は回避しません。[Microsoftのデスクトップアプリ設定](https://learn.microsoft.com/en-us/entra/identity-platform/scenario-desktop-app-configuration)、[calendarViewの権限](https://learn.microsoft.com/en-us/graph/api/calendar-list-calendarview?view=graph-rest-1.0)
 
-Graphの認証キャッシュはWindowsの資格情報ストアに保存されます。標準のOutlookデスクトップ連携ではこの認証キャッシュを使用しません。
+Graphの認証キャッシュはWindowsの資格情報ストアに保存されます。Teamsデスクトップ連携とOutlookデスクトップ連携では、このGraph認証キャッシュを使用しません。

@@ -1,7 +1,7 @@
 # 主な依存物・モデル
 
 このアプリのソースはMITですが、依存パッケージやモデルのライセンスを置き換えません。
-v0.2のWindowsポータブルZIPは実行環境、Whisper small、話者分離モデルを同梱します。
+WindowsポータブルZIPは実行環境、Whisper small、話者分離モデルを同梱します。
 ZIP内の `licenses/` に第三者のライセンス・通知、`third-party-sources/` に収集した対応ソースと
 取得元・ハッシュの記録を含めます。配布物全体がMITのみで構成されているわけではありません。
 モデルの重み・実行バイナリはGitのソースツリーには含めません。
@@ -15,6 +15,7 @@ ZIP内の `licenses/` に第三者のライセンス・通知、`third-party-sou
 | 話者特徴量 | [3D-Speaker / Apache-2.0](https://github.com/modelscope/3D-Speaker) のERes2Netモデル |
 | Windows音声録音 | [PyAudioWPatch](https://github.com/s0d3s/PyAudioWPatch) |
 | Windows画面状態 | [pywinauto](https://github.com/pywinauto/pywinauto) |
+| TeamsのローカルCDP接続 | [websocket-client / Apache-2.0](https://github.com/websocket-client/websocket-client) |
 | Outlookデスクトップ連携 | [pywin32](https://github.com/mhammond/pywin32) |
 | Windows配布 | [PyInstaller](https://pyinstaller.org/)（実行環境をまとめたonedir形式） |
 | 音声デコード | [PyAV](https://github.com/PyAV-Org/PyAV) とそのWindows wheelに含まれるFFmpeg等。ポータブルビルドは `av==16.1.0` を使用 |

@@ -49,6 +49,7 @@ import {
   type Session,
   type Settings,
   type Snapshot,
+  type TeamsConnection,
 } from "./api";
 
 const statusNames: Record<string, string> = {
@@ -96,7 +97,7 @@ const cx = (...items: (string | false | undefined)[]) =>
   items.filter(Boolean).join(" ");
 
 function calendarConnection(snapshot: Snapshot | null): MicrosoftConnection {
-  const provider = snapshot?.settings.calendar_source ?? "outlook_desktop";
+  const provider = snapshot?.settings.calendar_source ?? "teams_desktop";
   if (snapshot?.microsoft) return snapshot.microsoft;
   const connected =
     provider === "graph"
@@ -108,8 +109,33 @@ function calendarConnection(snapshot: Snapshot | null): MicrosoftConnection {
     state: connected ? "connected" : "disconnected",
     detail:
       snapshot?.health.calendar.detail ??
-      "Outlook（クラシック）を起動し、予定を同期してください。",
+      "Teamsで本日のカレンダーを日表示で開き、予定を同期してください。",
   };
+}
+
+const teamsStateNames: Record<TeamsConnection["state"], string> = {
+  needs_setup: "未設定",
+  waiting_for_restart: "Teamsの再起動待ち",
+  connected: "接続済み",
+  blocked: "操作を確認",
+  unavailable: "利用できません",
+  disconnected: "未接続",
+};
+
+function teamsConnection(snapshot: Snapshot | null): TeamsConnection {
+  return (
+    snapshot?.teams_connection ?? {
+      provider: "teams_desktop",
+      state: "needs_setup",
+      connected: false,
+      detail:
+        "Teamsの連携設定を有効にしてから、会議中でないときにTeamsを完全終了し、もう一度起動してください。",
+      needs_restart: false,
+      policy_restored: true,
+      debug_active: false,
+      expires_at: null,
+    }
+  );
 }
 
 function Status({ status }: { status: string }) {
@@ -258,6 +284,18 @@ export default function App() {
     setDetailTab("minutes");
     setDeleteConfirm(false);
   }
+  function openRecordingDialog() {
+    const armed = snapshot?.armed_meeting_id;
+    const available = snapshot?.meetings.some(
+      (meeting) =>
+        meeting.id === armed &&
+        !meeting.cancelled &&
+        !meeting.id.startsWith("demo-"),
+    );
+    setRecordMeeting(available && armed ? armed : "");
+    setRecordTitle("");
+    setShowStart(true);
+  }
   async function startRecording() {
     const result = await act<Session>("start", () =>
       post("/recordings/start", {
@@ -289,6 +327,13 @@ export default function App() {
         }
       } else popup?.close();
     } else popup?.close();
+  }
+  async function armMeeting(meeting: Meeting) {
+    await act(
+      `arm-${meeting.id}`,
+      () => post(`/meetings/${encodeURIComponent(meeting.id)}/arm`),
+      "録音対象に選択しました。Teamsでこの会議に参加してください。自動録音を使わない場合は「録音を開始」を押してください。",
+    );
   }
   async function exportSession() {
     if (!session) return;
@@ -322,6 +367,11 @@ export default function App() {
   );
   const microsoft = calendarConnection(snapshot);
   const desktopCalendar = microsoft.provider === "outlook_desktop";
+  const teamsCalendar = microsoft.provider === "teams_desktop";
+  const teamsUiaCalendar =
+    teamsCalendar &&
+    (snapshot?.settings.teams_calendar_mode ?? "uia") === "uia";
+  const partialCalendar = teamsCalendar;
   const isConfigured =
     microsoft.connected &&
     snapshot?.settings.has_api_key &&
@@ -907,10 +957,7 @@ export default function App() {
                 </div>
                 <button
                   className="button primary"
-                  onClick={() => {
-                    setRecordMeeting("");
-                    setShowStart(true);
-                  }}
+                  onClick={openRecordingDialog}
                   disabled={!!recording || offline}
                 >
                   <Plus size={18} />
@@ -927,7 +974,8 @@ export default function App() {
                     </div>
                     <div className="overview-stats">
                       <span>
-                        <strong>{meetings.length}</strong>件の会議
+                        <strong>{meetings.length}</strong>
+                        {partialCalendar ? "件を取得" : "件の会議"}
                       </span>
                       <span>
                         <strong>
@@ -1076,9 +1124,13 @@ export default function App() {
                       <div>
                         <strong>最初の準備を、ひとつずつ。</strong>
                         <p>
-                          {desktopCalendar
-                            ? "Outlookの起動・録音デバイス・音声モデル・LLM APIキーを確認して、自動録音を有効にしましょう。Microsoftのアプリ登録は不要です。"
-                            : "カレンダー接続・録音デバイス・音声モデル・LLM APIキーを確認して、自動録音を有効にしましょう。"}
+                          {teamsUiaCalendar
+                            ? "Teamsで本日のカレンダーを日表示で開き、同期しましょう。録音デバイス・音声モデル・LLM APIキーを確認したら、自動録音を有効にできます。Microsoftのアプリ登録やOutlookは不要です。"
+                            : teamsCalendar
+                              ? "Teamsの連携準備・録音デバイス・音声モデル・LLM APIキーを確認しましょう。Microsoftのアプリ登録は不要です。予定取得が使えない場合も、手動で録音できます。"
+                              : desktopCalendar
+                                ? "Outlookの起動・録音デバイス・音声モデル・LLM APIキーを確認して、自動録音を有効にしましょう。Microsoftのアプリ登録は不要です。"
+                                : "カレンダー接続・録音デバイス・音声モデル・LLM APIキーを確認して、自動録音を有効にしましょう。"}
                         </p>
                       </div>
                       <button
@@ -1115,7 +1167,8 @@ export default function App() {
                           disabled={
                             !!busy ||
                             !snapshot ||
-                            (!desktopCalendar && !microsoft.connected)
+                            (microsoft.provider === "graph" &&
+                              !microsoft.connected)
                           }
                           onClick={() =>
                             void act(
@@ -1132,6 +1185,24 @@ export default function App() {
                           同期
                         </button>
                       </div>
+                      {partialCalendar && (
+                        <div className="calendar-coverage" role="note">
+                          <Monitor size={16} />
+                          <div>
+                            <strong>
+                              Teamsに表示中の予定のみ · プレビュー
+                            </strong>
+                            <p>
+                              今日のすべての予定を取得できているとは限りません。Teamsのカレンダーで本日を日表示にして同期してください。
+                            </p>
+                          </div>
+                        </div>
+                      )}
+                      {(microsoft.warnings ?? []).map((warning, index) => (
+                        <p className="calendar-source-warning" key={index}>
+                          {warning}
+                        </p>
+                      ))}
                       <div className="meeting-list">
                         {meetings.length ? (
                           meetings.map((meeting) => {
@@ -1204,7 +1275,7 @@ export default function App() {
                                         記録を見る
                                         <ChevronRight size={15} />
                                       </button>
-                                    ) : (
+                                    ) : meeting.join_url ? (
                                       <button
                                         className="button secondary small"
                                         disabled={!!busy || !meeting.join_url}
@@ -1212,6 +1283,31 @@ export default function App() {
                                       >
                                         参加する
                                         <ExternalLink size={13} />
+                                      </button>
+                                    ) : (
+                                      <button
+                                        className="button secondary small"
+                                        disabled={
+                                          !!busy ||
+                                          meeting.id.startsWith("demo-") ||
+                                          snapshot?.armed_meeting_id ===
+                                            meeting.id
+                                        }
+                                        title="録音対象を選択してから、Teamsでこの会議に参加してください"
+                                        onClick={() => void armMeeting(meeting)}
+                                      >
+                                        {snapshot?.armed_meeting_id ===
+                                        meeting.id ? (
+                                          <>
+                                            <Check size={13} />
+                                            選択済み
+                                          </>
+                                        ) : (
+                                          <>
+                                            録音対象に選択
+                                            <Mic size={13} />
+                                          </>
+                                        )}
                                       </button>
                                     )}
                                   </div>
@@ -1224,26 +1320,38 @@ export default function App() {
                             <Empty
                               icon={<CalendarDays />}
                               title={
-                                microsoft.connected
-                                  ? "本日のTeams会議はありません"
-                                  : desktopCalendar
-                                    ? "Outlookを起動して、予定を同期"
-                                    : "選択したカレンダー接続を確認"
+                                teamsCalendar
+                                  ? microsoft.connected
+                                    ? "表示中のTeams予定はありません"
+                                    : teamsUiaCalendar
+                                      ? "Teamsで本日のカレンダーを表示"
+                                      : "Teams連携を準備しましょう"
+                                  : microsoft.connected
+                                    ? "本日のTeams会議はありません"
+                                    : desktopCalendar
+                                      ? "Outlookを起動して、予定を同期"
+                                      : "選択したカレンダー接続を確認"
                               }
                             >
                               <p>
-                                {microsoft.connected
-                                  ? "予定は自動で同期されます。予定外の会議も手動で録音できます。"
-                                  : desktopCalendar
-                                    ? "同じWindowsユーザーでOutlook（クラシック）を開き、サインイン済みの予定表を確認してください。Microsoftのアプリ登録やAPIキーは不要です。"
-                                    : "設定・連携で、選択した接続の状態を確認してください。"}
+                                {teamsCalendar
+                                  ? microsoft.connected
+                                    ? "Teamsのカレンダーで本日を日表示にし、同期してください。表示されていない予定は取得できない場合があります。"
+                                    : teamsUiaCalendar
+                                      ? "Teamsでカレンダーを開き、「今日」・「日」表示にして同期してください。Microsoftのアプリ登録・Outlook・Teamsの再起動は不要です。予定取得が使えない場合も手動録音できます。"
+                                      : "設定からTeamsデスクトップとの連携を準備できます。予定取得が使えない場合も、手動録音は利用できます。"
+                                  : microsoft.connected
+                                    ? "予定は自動で同期されます。予定外の会議も手動で録音できます。"
+                                    : desktopCalendar
+                                      ? "同じWindowsユーザーでOutlook（クラシック）を開き、サインイン済みの予定表を確認してください。Microsoftのアプリ登録やAPIキーは不要です。"
+                                      : "設定・連携で、選択した接続の状態を確認してください。"}
                               </p>
                               {!microsoft.connected && (
                                 <button
                                   className="text-button coral-text"
                                   disabled={!!busy}
                                   onClick={() => {
-                                    if (desktopCalendar) {
+                                    if (desktopCalendar || teamsUiaCalendar) {
                                       void act(
                                         "sync",
                                         () => post("/sync"),
@@ -1252,10 +1360,14 @@ export default function App() {
                                     } else navigate("settings");
                                   }}
                                 >
-                                  {desktopCalendar
-                                    ? "Outlookの予定を同期"
-                                    : "接続の設定を確認"}
-                                  {desktopCalendar ? (
+                                  {teamsUiaCalendar
+                                    ? "表示中のTeams予定を同期"
+                                    : teamsCalendar
+                                      ? "Teams連携の設定へ"
+                                      : desktopCalendar
+                                        ? "Outlookの予定を同期"
+                                        : "接続の設定を確認"}
+                                  {desktopCalendar || teamsUiaCalendar ? (
                                     <RefreshCw
                                       size={14}
                                       className={busy === "sync" ? "spin" : ""}
@@ -1263,6 +1375,16 @@ export default function App() {
                                   ) : (
                                     <ArrowRight size={14} />
                                   )}
+                                </button>
+                              )}
+                              {teamsCalendar && (
+                                <button
+                                  className="text-button manual-recording-link"
+                                  disabled={!!recording || offline}
+                                  onClick={openRecordingDialog}
+                                >
+                                  <Mic size={14} />
+                                  予定がなくても手動で録音
                                 </button>
                               )}
                             </Empty>
@@ -1273,9 +1395,11 @@ export default function App() {
                         <RefreshCw size={11} />
                         {snapshot?.health.calendar.last_sync
                           ? `最終同期 ${time(snapshot.health.calendar.last_sync)} · ${snapshot.settings.sync_interval_seconds}秒ごとに自動更新`
-                          : desktopCalendar
-                            ? "このPCのOutlook（クラシック）から予定を取得します"
-                            : "選択したカレンダー接続から予定を取得します"}
+                          : teamsCalendar
+                            ? "Teamsのカレンダーに現在表示されている予定を取得します"
+                            : desktopCalendar
+                              ? "このPCのOutlook（クラシック）から予定を取得します"
+                              : "選択したカレンダー接続から予定を取得します"}
                       </p>
                     </section>
                     <section className="recent-section">
@@ -1748,6 +1872,264 @@ type Act = <T>(
   fn: () => Promise<T>,
   message?: string,
 ) => Promise<T | undefined>;
+
+function TeamsVisibleCalendar({
+  snapshot,
+  act,
+  busy,
+  savePending,
+}: {
+  snapshot: Snapshot;
+  act: Act;
+  busy: string;
+  savePending: () => Promise<boolean>;
+}) {
+  const calendar = calendarConnection(snapshot);
+  const selected =
+    snapshot.settings.calendar_source === "teams_desktop" &&
+    (snapshot.settings.teams_calendar_mode ?? "uia") === "uia";
+  return (
+    <div className="teams-setup teams-visible-calendar">
+      <div className="no-registration-note">
+        <ShieldCheck size={16} />
+        <span>Microsoftのアプリ登録・Outlook・Teamsの再起動は不要です。</span>
+      </div>
+      <ol className="teams-setup-steps">
+        <li>
+          <span>1</span>
+          <p>
+            <strong>Teamsのカレンダーを開く</strong>
+            このPCのTeamsデスクトップで、いつものアカウントにサインインしてください。
+          </p>
+        </li>
+        <li>
+          <span>2</span>
+          <p>
+            <strong>「今日」・「日」表示で、予定を画面に出す</strong>
+            読み取りたい予定が見える位置にスクロールしてください。Teamsの画面操作はご自身で行います。
+          </p>
+        </li>
+        <li>
+          <span>3</span>
+          <p>
+            <strong>表示中の予定を同期</strong>
+            以降はgijiの起動中に定期的に読み取ります。Teamsの表示状態によっては取得できません。
+          </p>
+        </li>
+      </ol>
+      <div className="teams-preview-note">
+        <CircleHelp size={16} />
+        <div>
+          <strong>表示されている予定だけを、読み取ります。</strong>
+          <p>
+            gijiはTeamsの画面をクリックしたり、カレンダーを移動したりしません。画面外の予定は取得できないため、本日の予定がすべて揃うとは限りません。話者の実名は音声から確定せず、録音後にご自身で対応付けできます。
+          </p>
+        </div>
+      </div>
+      <div className="connection-actions">
+        <button
+          className="button secondary"
+          disabled={!!busy}
+          onClick={async () => {
+            if (!(await savePending())) return;
+            await act(
+              "sync",
+              () => post("/sync"),
+              "表示中のTeams予定の同期を確認しました",
+            );
+          }}
+        >
+          <RefreshCw size={15} className={busy === "sync" ? "spin" : ""} />
+          表示中のTeams予定を同期
+        </button>
+        <span className="muted" role="status">
+          {selected
+            ? calendar.detail
+            : "保存して、表示中の予定を読み取る方式に切り替えます。"}
+        </span>
+      </div>
+      <p className="setting-hint teams-fallback-note">
+        会議名を録音に引き継ぐには、ホームで「録音対象に選択」を押してからTeamsで参加してください。予定には対面会議なども含まれる場合があります。取得できない場合も手動録音を利用できます。
+      </p>
+    </div>
+  );
+}
+
+function TeamsSetup({
+  snapshot,
+  act,
+  busy,
+  savePending,
+}: {
+  snapshot: Snapshot;
+  act: Act;
+  busy: string;
+  savePending: () => Promise<boolean>;
+}) {
+  const connection = teamsConnection(snapshot);
+  const callActive =
+    !!snapshot.health.recording || snapshot.health.teams.state === "in_meeting";
+  const setupActive =
+    connection.connected ||
+    connection.debug_active ||
+    connection.needs_restart ||
+    !connection.policy_restored ||
+    connection.expires_at !== null;
+  const expiresAt =
+    connection.expires_at === null
+      ? null
+      : new Date(
+          connection.expires_at < 1_000_000_000_000
+            ? connection.expires_at * 1000
+            : connection.expires_at,
+        );
+  return (
+    <div className="teams-setup">
+      <div className="teams-preview-note">
+        <CircleHelp size={16} />
+        <div>
+          <strong>取得できるのは、Teamsに現在表示されている予定です。</strong>
+          <p>
+            本日をカレンダーに表示して使用してください。表示外の予定や、Teamsの更新によって読み取れない予定があります。話者の実名は音声から確定せず、録音後にご自身で対応付けできます。
+          </p>
+        </div>
+      </div>
+      <ol className="teams-setup-steps">
+        <li>
+          <span>1</span>
+          <p>
+            <strong>会議が終わってから、連携設定を有効にする</strong>
+            下の説明を確認し、「Teams連携を準備」を押します。
+          </p>
+        </li>
+        <li>
+          <span>2</span>
+          <p>
+            <strong>Teamsを完全に終了して、もう一度起動</strong>
+            ウィンドウを閉じるだけではなく、タスクトレイのTeamsアイコンから終了してください。終了・起動はご自身で行います。
+          </p>
+        </li>
+        <li>
+          <span>3</span>
+          <p>
+            <strong>Teamsのカレンダーで、本日の予定を表示</strong>
+            準備から10分以内に通常の方法でTeamsを起動してください。「接続済み」になったら予定を同期できます。
+          </p>
+        </li>
+      </ol>
+      <div className="teams-access-notice">
+        <ShieldCheck size={18} />
+        <div>
+          <strong>有効にする前に、ローカル接続について</strong>
+          <p>
+            連携中は、このPC上の別のアプリからも、予定表以外を含むTeams内の情報を読み取ったり操作したりできる接続口が開きます。信頼できるPCで、必要な間だけ有効にしてください。
+          </p>
+          <p>
+            準備用の一時設定は最大10分です。設定が復元済みでも接続口はTeamsの完全終了まで残ります。使い終わったら連携を解除し、会議終了後にTeamsを完全終了して通常起動してください。
+          </p>
+        </div>
+      </div>
+      <div
+        className={cx(
+          "teams-connection-status",
+          connection.connected && "connected",
+        )}
+        role="status"
+      >
+        <div className="teams-status-heading">
+          <span className="tiny-dot" />
+          <strong>{teamsStateNames[connection.state]}</strong>
+          {connection.policy_restored && setupActive && (
+            <span className="connection-pill">一時設定は復元済み</span>
+          )}
+        </div>
+        <p>{connection.detail}</p>
+        {expiresAt && !Number.isNaN(expiresAt.getTime()) && (
+          <small>
+            一時設定の期限：
+            {expiresAt.toLocaleTimeString("ja-JP", {
+              hour: "2-digit",
+              minute: "2-digit",
+            })}
+          </small>
+        )}
+        {connection.needs_restart && (
+          <p className="teams-restart-note">
+            会議・録音が終了してから、Teamsを完全終了し、通常の方法で起動してください。
+          </p>
+        )}
+        {connection.debug_active && connection.policy_restored && (
+          <p className="teams-restart-note">
+            ローカル接続口はまだ有効です。閉じるにはTeamsの完全終了が必要です。
+          </p>
+        )}
+      </div>
+      {callActive && (
+        <p className="teams-call-notice">
+          会議・録音中は新たな連携準備を行えません。終了後に操作してください。設定の解除は録音を停止しません。
+        </p>
+      )}
+      <div className="teams-setup-actions">
+        <button
+          className="button secondary"
+          disabled={
+            !!busy ||
+            callActive ||
+            connection.connected ||
+            connection.state === "waiting_for_restart"
+          }
+          onClick={async () => {
+            if (!(await savePending())) return;
+            await act(
+              "teams-prepare",
+              () => post("/teams/prepare"),
+              "Teams連携の準備を確認しました。表示された状態と再起動の案内をご確認ください。",
+            );
+          }}
+        >
+          {busy === "teams-prepare" ? (
+            <LoaderCircle size={15} className="spin" />
+          ) : (
+            <Monitor size={15} />
+          )}
+          Teams連携を準備
+        </button>
+        <button
+          className="button secondary"
+          disabled={!!busy || !connection.connected}
+          onClick={async () => {
+            if (!(await savePending())) return;
+            await act(
+              "sync",
+              () => post("/sync"),
+              "表示中のTeams予定の同期を確認しました",
+            );
+          }}
+        >
+          <RefreshCw size={15} className={busy === "sync" ? "spin" : ""} />
+          表示中の予定を同期
+        </button>
+        <button
+          className="text-button teams-disconnect"
+          disabled={!!busy || !setupActive}
+          onClick={() =>
+            void act(
+              "teams-disconnect",
+              () => post("/teams/disconnect"),
+              "Teams連携の設定を解除しました。表示された再起動の案内を確認してください。",
+            )
+          }
+        >
+          連携を解除
+        </button>
+      </div>
+      <p className="setting-hint teams-fallback-note">
+        連携できない場合も、ホームの「録音を開始」でマイクと相手の声を記録できます。Outlook（クラシック）があれば、下の取得元へ切り替えることもできます。
+      </p>
+    </div>
+  );
+}
+
 function SettingsPage({
   snapshot,
   act,
@@ -1774,7 +2156,8 @@ function SettingsPage({
     if (snapshot && !draft)
       setDraft({
         ...snapshot.settings,
-        calendar_source: snapshot.settings.calendar_source ?? "outlook_desktop",
+        calendar_source: snapshot.settings.calendar_source ?? "teams_desktop",
+        teams_calendar_mode: snapshot.settings.teams_calendar_mode ?? "uia",
         api_key: "",
       });
   }, [snapshot, draft]);
@@ -1797,6 +2180,7 @@ function SettingsPage({
     if (snapshot?.settings.has_microsoft_login) setLogin(null);
   }, [snapshot?.settings.has_microsoft_login]);
   const microsoft = calendarConnection(snapshot);
+  const teams = teamsConnection(snapshot);
   const microphoneReady =
     devicesLoaded &&
     !deviceError &&
@@ -1825,9 +2209,11 @@ function SettingsPage({
   const setupSteps = [
     {
       label:
-        microsoft.provider === "outlook_desktop"
-          ? "Outlook・予定表を検出"
-          : "Graphカレンダーに接続",
+        microsoft.provider === "teams_desktop"
+          ? "Teamsの表示中の予定を確認"
+          : microsoft.provider === "outlook_desktop"
+            ? "Outlook・予定表を検出"
+            : "Graphカレンダーに接続",
       ready: microsoft.connected,
       section: "calendar-settings",
     },
@@ -1886,7 +2272,8 @@ function SettingsPage({
     if (result) {
       setDraft({
         ...result,
-        calendar_source: result.calendar_source ?? "outlook_desktop",
+        calendar_source: result.calendar_source ?? "teams_desktop",
+        teams_calendar_mode: result.teams_calendar_mode ?? "uia",
         api_key: "",
       });
       setDirty(false);
@@ -1902,7 +2289,7 @@ function SettingsPage({
           <h1>
             設定・連携<span className="heading-dot">.</span>
           </h1>
-          <p>このPCのOutlookとTeamsを使って、会議の記録を始めましょう。</p>
+          <p>このPCのTeamsから、会議の記録を始めましょう。</p>
         </div>
         <button
           className="button primary"
@@ -1931,8 +2318,10 @@ function SettingsPage({
                 <CalendarDays size={23} />
               </span>
               <div>
-                <h2>このPCの予定表から、会議を取得</h2>
-                <p>OutlookにあるTeams会議を、自動でホームに集めます。</p>
+                <h2>Teamsから、会議を取得</h2>
+                <p>
+                  いつものTeamsでカレンダーを開いて同期します。Outlook連携も任意で利用できます。
+                </p>
               </div>
               <span
                 className={cx(
@@ -1949,7 +2338,142 @@ function SettingsPage({
             </div>
             <label
               className={cx(
-                "calendar-source-option",
+                "calendar-source-option teams-source-option",
+                draft.calendar_source === "teams_desktop" && "selected",
+              )}
+            >
+              <input
+                type="radio"
+                name="calendar-source"
+                value="teams_desktop"
+                checked={draft.calendar_source === "teams_desktop"}
+                onChange={() => {
+                  update("calendar_source", "teams_desktop");
+                  setLogin(null);
+                }}
+              />
+              <span className="teams-source-icon">T</span>
+              <span>
+                <strong>
+                  Teams デスクトップ
+                  <span className="preview-badge">プレビュー</span>
+                </strong>
+                <small>
+                  Teamsに現在表示されている予定を取得します。Microsoftのアプリ登録は不要です。
+                </small>
+              </span>
+              {draft.calendar_source === "teams_desktop" && (
+                <Check size={18} className="source-selected-check" />
+              )}
+            </label>
+            {draft.calendar_source === "teams_desktop" && (
+              <>
+                {draft.teams_calendar_mode === "uia" && (
+                  <TeamsVisibleCalendar
+                    snapshot={snapshot}
+                    act={act}
+                    busy={busy}
+                    savePending={async () => !dirty || (await save())}
+                  />
+                )}
+                <details
+                  className="advanced-calendar teams-mode-settings"
+                  open={draft.teams_calendar_mode === "cdp" ? true : undefined}
+                >
+                  <summary>詳細設定：Teamsの接続方法</summary>
+                  <p className="setting-hint">
+                    通常は「表示中の予定を読み取る」を使用してください。詳細接続は、ローカル接続の公開範囲を確認して利用する任意の機能です。
+                  </p>
+                  <div className="teams-mode-options">
+                    <label
+                      className={cx(
+                        "calendar-source-option",
+                        draft.teams_calendar_mode === "uia" && "selected",
+                      )}
+                    >
+                      <input
+                        type="radio"
+                        name="teams-calendar-mode"
+                        value="uia"
+                        checked={draft.teams_calendar_mode === "uia"}
+                        onChange={() => update("teams_calendar_mode", "uia")}
+                      />
+                      <span>
+                        <strong>
+                          表示中の予定を読み取る
+                          <span className="recommended-badge">標準</span>
+                        </strong>
+                        <small>
+                          追加設定は不要です。Teamsの表示内容を読み取ります。
+                        </small>
+                      </span>
+                    </label>
+                    <label
+                      className={cx(
+                        "calendar-source-option",
+                        draft.teams_calendar_mode === "cdp" && "selected",
+                      )}
+                    >
+                      <input
+                        type="radio"
+                        name="teams-calendar-mode"
+                        value="cdp"
+                        checked={draft.teams_calendar_mode === "cdp"}
+                        onChange={() => update("teams_calendar_mode", "cdp")}
+                      />
+                      <span>
+                        <strong>
+                          詳細接続（CDP）
+                          <span className="preview-badge">任意</span>
+                        </strong>
+                        <small>
+                          連携準備とTeamsの完全終了・再起動が必要です。このPCに接続口を開きます。
+                        </small>
+                      </span>
+                    </label>
+                  </div>
+                  {draft.teams_calendar_mode === "cdp" && (
+                    <TeamsSetup
+                      snapshot={snapshot}
+                      act={act}
+                      busy={busy}
+                      savePending={async () => !dirty || (await save())}
+                    />
+                  )}
+                </details>
+              </>
+            )}
+            {(draft.calendar_source !== "teams_desktop" ||
+              draft.teams_calendar_mode !== "cdp") &&
+              (teams.debug_active ||
+                teams.needs_restart ||
+                !teams.policy_restored) && (
+                <div className="teams-other-source-notice">
+                  <ShieldCheck size={16} />
+                  <div>
+                    <strong>Teamsのローカル接続設定を確認してください</strong>
+                    <p>
+                      取得方法を切り替えても、詳細接続で開いたTeamsの接続口は完全終了するまで残る場合があります。不要になったら設定を解除し、会議終了後にTeamsを完全終了して通常起動してください。
+                    </p>
+                    <button
+                      className="text-button"
+                      disabled={!!busy}
+                      onClick={() =>
+                        void act(
+                          "teams-disconnect",
+                          () => post("/teams/disconnect"),
+                          "Teams連携の設定を解除しました。状態の案内を確認してください。",
+                        )
+                      }
+                    >
+                      Teams連携の設定を解除
+                    </button>
+                  </div>
+                </div>
+              )}
+            <label
+              className={cx(
+                "calendar-source-option optional-calendar-source",
                 draft.calendar_source === "outlook_desktop" && "selected",
               )}
             >
@@ -1967,7 +2491,7 @@ function SettingsPage({
               <span>
                 <strong>
                   Outlook デスクトップ
-                  <span className="recommended-badge">おすすめ</span>
+                  <span className="recommended-badge">任意</span>
                 </strong>
                 <small>
                   Outlook（クラシック）の予定表を、このPCから読み取ります。
@@ -2049,7 +2573,7 @@ function SettingsPage({
               <summary>詳細設定：別のカレンダー接続を使う</summary>
               <p className="setting-hint">
                 組織で既存のMicrosoft
-                Graph接続が用意されている場合だけ利用する、任意の設定です。通常はOutlookデスクトップのままで使用できます。
+                Graph接続が用意されている場合だけ利用する、任意の設定です。通常はTeamsデスクトップ、またはOutlookデスクトップを選択してください。
               </p>
               <label
                 className={cx(

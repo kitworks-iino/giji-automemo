@@ -27,16 +27,19 @@ def public_session(session: dict, compact: bool = False) -> dict:
 
 class GijiService:
     def __init__(self, store: Store, secrets: Secrets | None = None, *, calendar=None,
-                 detector=None, recorder=None, models=None, pipeline=None):
+                 detector=None, recorder=None, models=None, pipeline=None, teams_connection=None):
         from .audio import AudioRecorder
         from .calendar import CalendarRouter
         from .models import ModelManager
         from .pipeline import Pipeline
         from .teams import TeamsDetector
+        from .teams_connection import TeamsConnectionManager
 
         self.store = store
         self.secrets = secrets or Secrets()
-        self.calendar = calendar or CalendarRouter(self.secrets, self.store.settings)
+        self.teams_connection = teams_connection or TeamsConnectionManager(store.data_dir)
+        self.calendar = calendar or CalendarRouter(
+            self.secrets, self.store.settings, teams_connection=self.teams_connection)
         self.detector = detector or TeamsDetector()
         self.recorder = recorder or AudioRecorder()
         self.models = models or ModelManager(store.data_dir)
@@ -44,6 +47,7 @@ class GijiService:
         self.lifecycle = MeetingLifecycle()
         self.active_id: str | None = None
         self.armed_id: str | None = None
+        self.last_calendar_ids: set[str] = set()
         self.tasks: list[asyncio.Task] = []
         self.login_task: asyncio.Task | None = None
         self.login_generation = 0
@@ -56,7 +60,7 @@ class GijiService:
         self.health = {
             "platform": platform.system(),
             "teams": {"state": "unknown", "detail": "Teamsを確認しています"},
-            "calendar": {"state": "disconnected", "detail": "Outlookデスクトップの予定を確認しています", "last_sync": None},
+            "calendar": {"state": "disconnected", "detail": "Teamsで今日のカレンダーを日表示で開いてください", "last_sync": None},
             "pipeline": {"state": "idle", "detail": "待機中"},
             "warnings": [],
         }
@@ -85,6 +89,12 @@ class GijiService:
         self.calendar.cancel_login()
         if hasattr(self.calendar, "close"):
             self.calendar.close()
+        try:
+            self.teams_connection.close()
+        except Exception:
+            # Cleanup failure must not strand a microphone capture or prevent
+            # saving audio. The journal/helper can retry exact-value restoration.
+            self.health["warnings"].append("Teamsの一時設定を復元できませんでした。gijiを開き直して連携を解除してください。")
         if hasattr(self.detector, "close"):
             self.detector.close()
         if self.active_id:
@@ -123,8 +133,11 @@ class GijiService:
             "connected": health["calendar"]["state"] == "connected"
                 or (health["calendar"]["state"] == "syncing" and bool(health["calendar"]["last_sync"])),
             "detail": health["calendar"]["detail"],
+            "coverage": health["calendar"].get("coverage", "unknown"),
+            "warnings": health["calendar"].get("warnings", []),
         }
         return {"meetings": self.today_meetings(), "microsoft": connection,
+                "teams_connection": self.teams_connection.status(), "armed_meeting_id": self.armed_id,
                 "sessions": [public_session(s, compact=True) for s in self.store.sessions()],
                 "settings": self.public_settings(), "health": health, "now": utcnow()}
 
@@ -153,7 +166,17 @@ class GijiService:
         synced = datetime.fromisoformat(calendar["last_sync"]).astimezone()
         if synced.date() != datetime.now().astimezone().date():
             return []
-        return self.today_meetings()
+        meetings = self.today_meetings()
+        if self.store.settings()["calendar_source"] == "teams_desktop":
+            from .microsoft import valid_teams_url
+
+            # Cached, off-screen items may have been moved or cancelled. They
+            # remain viewable, but only the latest observation can auto-match.
+            # A visible calendar also contains offline appointments. An actual
+            # Teams link or explicit selection is needed to bind a recording.
+            return [m for m in meetings if m["id"] in self.last_calendar_ids
+                    and valid_teams_url(m.get("join_url", ""))]
+        return meetings
 
     async def update_settings(self, patch: dict):
         patch = dict(patch)
@@ -168,18 +191,25 @@ class GijiService:
             else:
                 self.secrets.delete("llm_api_key")
         source_changed = settings["calendar_source"] != previous["calendar_source"]
+        mode_changed = settings["teams_calendar_mode"] != previous["teams_calendar_mode"]
         account_changed = (settings["client_id"], settings["tenant_id"]) != (
             previous["client_id"], previous["tenant_id"])
-        if source_changed or account_changed:
+        if source_changed or account_changed or mode_changed:
             self.login_generation += 1
             self.calendar.cancel_login()
             async with self.sync_lock:
+                if (source_changed or mode_changed) and previous["calendar_source"] == "teams_desktop":
+                    await asyncio.to_thread(self.teams_connection.disconnect)
                 if account_changed:
                     await asyncio.to_thread(self.calendar.logout)
                 self.store.replace_meetings([])
+                self.armed_id = None
+                self.last_calendar_ids.clear()
                 self.health["calendar"] = {
                     "state": "disconnected", "last_sync": None,
-                    "detail": ("Outlookを起動して予定を同期してください"
+                    "detail": ("Teamsで今日のカレンダーを日表示で開き、同期してください"
+                               if settings["calendar_source"] == "teams_desktop"
+                               else "Outlookを起動して予定を同期してください"
                                if settings["calendar_source"] == "outlook_desktop"
                                else "Microsoftアカウントを接続してください"),
                 }
@@ -199,8 +229,23 @@ class GijiService:
             self.health["calendar"].update(state="syncing", detail="今日の予定を同期中")
             try:
                 meetings = await asyncio.to_thread(self.calendar.fetch_today, settings)
-                self.store.replace_meetings(meetings)
-                self.health["calendar"] = {"state": "connected", "detail": "同期済み", "last_sync": utcnow()}
+                self.last_calendar_ids = {m["id"] for m in meetings}
+                provider_status = self.calendar.status()
+                coverage = provider_status.get("coverage", "unknown")
+                if settings["calendar_source"] == "teams_desktop" and coverage != "complete":
+                    # Virtualized Teams calendars do not expose every event.
+                    # Keep earlier observations; an off-screen/deleted event
+                    # cannot be distinguished until the user reconnects.
+                    merged = {m["id"]: m for m in self.today_meetings()}
+                    merged.update({m["id"]: {**m, "observed_at": utcnow()} for m in meetings})
+                    self.store.replace_meetings(list(merged.values()))
+                else:
+                    self.store.replace_meetings(meetings)
+                self.health["calendar"] = {
+                    "state": "connected", "detail": provider_status.get("detail") or "同期済み",
+                    "coverage": coverage, "warnings": provider_status.get("warnings", []),
+                    "last_sync": utcnow(),
+                }
             except CalendarError as exc:
                 self.health["calendar"].update(state="error", detail=str(exc))
             except Exception:
@@ -208,11 +253,13 @@ class GijiService:
                     state="error", detail=(
                         "予定を同期できません。従来版Outlookを起動し、同じWindowsユーザーでやり直してください。"
                         if settings["calendar_source"] == "outlook_desktop"
+                        else "Teamsの予定を読み取れません。設定で接続状態を確認し、Teamsの今日のカレンダーを開いてください。"
+                        if settings["calendar_source"] == "teams_desktop"
                         else "予定を同期できません。接続とMicrosoftの権限を確認し、必要なら再接続してください。"))
 
     async def login(self) -> dict:
         if self.store.settings()["calendar_source"] != "graph":
-            raise ValueError("Outlookデスクトップ連携ではサインイン不要です。予定を同期してください。")
+            raise ValueError("デスクトップ連携ではMicrosoftへの追加サインイン不要です。カレンダーを開いて予定を同期してください。")
         if self.login_task and not self.login_task.done():
             raise ValueError("Microsoftサインインを処理中です。画面のコードで認証してください。")
         details = await asyncio.to_thread(self.calendar.begin_login, self.store.settings())
@@ -241,7 +288,46 @@ class GijiService:
         async with self.sync_lock:
             await asyncio.to_thread(self.calendar.logout)
             self.store.replace_meetings([])
+            self.armed_id = None
             self.health["calendar"] = {"state": "disconnected", "detail": "未接続", "last_sync": None}
+
+    async def prepare_teams(self) -> dict:
+        from .teams_connection import TeamsConnectionError
+
+        settings = self.store.settings()
+        if settings["calendar_source"] != "teams_desktop" or settings["teams_calendar_mode"] != "cdp":
+            raise ValueError("CDP接続を使う場合は、設定でTeamsの詳細接続を選んで保存してください。通常の画面読み取りには準備不要です。")
+        if self.active_id or self.health["teams"]["state"] == "in_meeting":
+            raise ValueError("会議と録音が終わってからTeams連携を準備してください。")
+        async with self.sync_lock:
+            try:
+                result = await asyncio.to_thread(self.teams_connection.prepare)
+            except TeamsConnectionError as exc:
+                raise ValueError(str(exc)) from None
+            self.store.replace_meetings([])
+            self.armed_id = None
+            self.health["calendar"] = {"state": "disconnected", "last_sync": None, "detail": result["detail"]}
+            return result
+
+    async def disconnect_teams(self) -> dict:
+        from .teams_connection import TeamsConnectionError
+
+        async with self.sync_lock:
+            try:
+                result = await asyncio.to_thread(self.teams_connection.disconnect)
+            except TeamsConnectionError as exc:
+                raise ValueError(str(exc)) from None
+            if self.store.settings()["calendar_source"] == "teams_desktop":
+                self.store.replace_meetings([])
+                self.armed_id = None
+                self.health["calendar"] = {"state": "disconnected", "last_sync": None, "detail": result["detail"]}
+            return result
+
+    def arm_meeting(self, meeting_id: str) -> None:
+        meeting = next((m for m in self.today_meetings() if m["id"] == meeting_id), None)
+        if not meeting or meeting_id.startswith("demo-") or meeting.get("cancelled"):
+            raise ValueError("今日の有効な会議を選択してください。")
+        self.armed_id = meeting_id
 
     async def start_recording(self, meeting_id: str | None = None, title: str | None = None,
                               source: str = "manual") -> dict:

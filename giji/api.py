@@ -17,7 +17,8 @@ from .service import GijiService, public_session
 
 class SettingsPatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    calendar_source: Literal["outlook_desktop", "graph"] = "outlook_desktop"
+    calendar_source: Literal["teams_desktop", "outlook_desktop", "graph"] = "teams_desktop"
+    teams_calendar_mode: Literal["uia", "cdp"] = "uia"
     client_id: str = Field("", max_length=100)
     tenant_id: str = Field("organizations", max_length=100)
     auto_record: bool = False
@@ -191,15 +192,28 @@ def create_app(service: GijiService, token: str, port: int, *, run_background=Tr
         await service.sync()
         return {"ok": True}
 
+    @app.post("/api/teams/prepare")
+    async def teams_prepare():
+        return await service.prepare_teams()
+
+    @app.post("/api/teams/disconnect")
+    async def teams_disconnect():
+        return await service.disconnect_teams()
+
+    @app.post("/api/meetings/{meeting_id}/arm")
+    def arm(meeting_id: str):
+        service.arm_meeting(meeting_id)
+        return {"ok": True}
+
     @app.post("/api/meetings/{meeting_id}/join")
     async def join(meeting_id: str):
         from .microsoft import valid_teams_url
         meeting = next((m for m in service.store.meetings() if m["id"] == meeting_id), None)
         if not meeting or meeting.get("cancelled"):
             raise KeyError(meeting_id)
-        if not valid_teams_url(meeting["join_url"]):
-            raise ValueError("Teamsの参加URLがありません。Outlookで会議を開いてください。")
-        service.armed_id = meeting_id
+        if not valid_teams_url(meeting.get("join_url", "")):
+            raise ValueError("参加URLを取得できませんでした。Teamsでこの会議を開いて参加してください。")
+        service.arm_meeting(meeting_id)
         return {"join_url": meeting["join_url"]}
 
     @app.post("/api/recordings/start")

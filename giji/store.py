@@ -10,7 +10,8 @@ from typing import Any
 
 
 DEFAULT_SETTINGS: dict[str, Any] = {
-    "calendar_source": "outlook_desktop",
+    "calendar_source": "teams_desktop",
+    "teams_calendar_mode": "uia",
     "client_id": "",
     "tenant_id": "organizations",
     "auto_record": False,

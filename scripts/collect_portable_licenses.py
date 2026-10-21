@@ -64,7 +64,7 @@ def download(url: str, destination: Path, expected_sha256: str | None = None) ->
     temporary = destination.with_name(destination.name + ".partial")
     for attempt in range(4):
         try:
-            request = Request(url, headers={"User-Agent": "giji-automemo-source-collector/0.2"})
+            request = Request(url, headers={"User-Agent": "giji-automemo-source-collector/0.3"})
             with urlopen(request, timeout=120) as response, temporary.open("wb") as output:
                 if urlparse(response.url).scheme != "https":
                     raise RuntimeError(f"Source redirected to an insecure URL: {url}")

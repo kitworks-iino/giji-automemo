@@ -35,6 +35,12 @@ def acquire_lock(data_dir: Path):
 
 
 def main():
+    if sys.argv[1:] == ["--teams-uia-calendar-worker"]:
+        from .teams_calendar_uia import worker_main
+        raise SystemExit(worker_main())
+    if sys.argv[1:2] == ["--teams-connection-cleanup"]:
+        from .teams_connection import cleanup_main
+        raise SystemExit(cleanup_main(sys.argv[2:]))
     # The isolated helper must run COM on its own main STA thread. Frozen builds
     # use this entry point without starting a second app or opening the browser.
     if sys.argv[1:] == ["--calendar-worker"]:
