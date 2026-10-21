@@ -13,7 +13,7 @@ import pytest
 
 from giji.teams_calendar import (
     CDPClient, TeamsCalendarError, TeamsDesktopCalendar, _CalendarReader,
-    _SNAPSHOT_JS, _allowed_origin, _bounded_socket_class,
+    _SNAPSHOT_JS, _allowed_origin, _allowed_calendar_popup, _bounded_socket_class,
 )
 
 
@@ -25,6 +25,7 @@ def snapshot(**changes):
     today = datetime.now(timezone.utc).date().isoformat()
     result = {
         "url": "https://outlook.office.com/hosted/calendar/", "timezone": "UTC",
+        "document_visibility": "visible", "document_renderable": True,
         "calendar_present": True, "date_texts": [today], "day_view": True,
         "empty_text": "", "events": [{"key": "event-1", "title": "Synthetic review",
                                       "start": f"{today}T10:00:00Z", "end": f"{today}T11:00:00Z"}],
@@ -178,6 +179,24 @@ def test_allowed_frame_origins(url, allowed):
     assert _allowed_origin(url, calendar=True) is allowed
 
 
+@pytest.mark.parametrize("url,allowed", [
+    ("https://outlook.office.com/hosted/calendar/", True),
+    ("https://outlook.office365.com/hosted/calendar?source=teams", True),
+    ("https://outlook.cloud.microsoft:443/hosted/calendar/#day", True),
+    ("https://outlook.office.com/calendar/", False),
+    ("https://outlook.office.com/hosted/calendar/other", False),
+    ("https://outlook.office.com/hosted/calendar%2F", False),
+    ("https://outlook.office.com.attacker.test/hosted/calendar/", False),
+    ("https://user@outlook.office.com/hosted/calendar/", False),
+    ("https://outlook.office.com:8443/hosted/calendar/", False),
+    ("http://outlook.office.com/hosted/calendar/", False),
+    ("\nhttps://outlook.office.com/hosted/calendar/", False),
+    ("https://teams.microsoft.com/hosted/calendar/", False),
+])
+def test_calendar_popup_url_is_exact_and_not_a_general_outlook_tab(url, allowed):
+    assert _allowed_calendar_popup(url) is allowed
+
+
 class FakeCDP:
     def __init__(self, endpoint=None, deadline=None, *, hidden=False, observed=None):
         self.calls = []
@@ -204,7 +223,7 @@ class FakeCDP:
             return {"targetInfos": [
                 {"targetId": "main", "type": "page", "url": "https://teams.microsoft.com/v2/"},
                 {"targetId": "calendar", "type": "iframe", "url": "https://outlook.office.com/hosted/calendar/"},
-                {"targetId": "unrelated", "type": "page", "url": "https://outlook.office.com/hosted/calendar/"},
+                {"targetId": "unrelated", "type": "page", "url": "https://outlook.office.com/calendar/"},
             ]}
         if method == "Target.attachToTarget":
             return {"sessionId": "session-" + params["targetId"]}
@@ -285,3 +304,96 @@ def test_provider_sanitizes_untrusted_error_and_closes():
 def test_collector_is_read_only():
     assert ".click(" not in _SNAPSHOT_JS
     assert "dispatchEvent" not in _SNAPSHOT_JS
+
+
+class PopupCDP(FakeCDP):
+    def __init__(self, *, tree_url=None, observed=None):
+        super().__init__(observed=observed)
+        self.tree_url = tree_url or "https://outlook.office.com/hosted/calendar/"
+
+    def contexts(self, session):
+        return {"popup": 9}
+
+    def call(self, method, params=None, session=None):
+        if method == "Target.getTargets":
+            self.calls.append((method, params, session))
+            return {"targetInfos": [
+                {"targetId": "popup", "type": "page", "url": "https://outlook.office.com/hosted/calendar/"},
+                {"targetId": "ordinary-outlook", "type": "page", "url": "https://outlook.office.com/calendar/"},
+            ]}
+        if method == "Page.getFrameTree":
+            self.calls.append((method, params, session))
+            return {"frameTree": {"frame": {"id": "popup", "url": self.tree_url}}}
+        return super().call(method, params, session)
+
+    def evaluate(self, expression, session, context):
+        assert expression == _SNAPSHOT_JS
+        return self.observed
+
+
+def test_dedicated_calendar_popup_inside_verified_teams_browser_is_read():
+    client = PopupCDP()
+    assert _CalendarReader(client).read() == [client.observed]
+    attached = [params["targetId"] for method, params, _ in client.calls if method == "Target.attachToTarget"]
+    assert attached == ["popup"]
+
+
+def test_popup_frame_tree_is_revalidated_after_target_discovery():
+    client = PopupCDP(tree_url="https://outlook.office.com/calendar/")
+    assert _CalendarReader(client).frames() == []
+
+
+def test_popup_evaluation_url_is_revalidated_after_frame_discovery():
+    client = PopupCDP(observed=snapshot(url="https://outlook.office.com/calendar/"))
+    with pytest.raises(TeamsCalendarError, match="表示元が変わりました"):
+        _CalendarReader(client).read()
+
+
+@pytest.mark.parametrize("visibility", ["hidden", "unknown", None])
+def test_background_or_unknown_empty_day_never_clears_prior_meetings(visibility):
+    client = FakeCDP(observed=snapshot(events=[], empty_text="No events today", document_visibility=visibility))
+    provider = TeamsDesktopCalendar(Mock(connect_endpoint=Mock(return_value=ENDPOINT)), client_factory=lambda *args: client)
+    assert provider.fetch_today({}) == []
+    status = provider.status()
+    assert status["coverage"] == "visible_only"
+    assert status["freshness"] == "dom_observed"
+    assert status["document_visibility"] == ("hidden" if visibility == "hidden" else "unknown")
+    assert any("最新情報" in warning for warning in status["warnings"])
+    assert "予定がないことを確認" not in status["detail"]
+
+
+def test_css_hidden_document_never_uses_ax_as_background_fallback():
+    client = PopupCDP(observed=snapshot(events=[], document_renderable=False))
+    with pytest.raises(TeamsCalendarError, match="未読込"):
+        _CalendarReader(client).read()
+    assert not any(method.startswith("Accessibility.") for method, _, _ in client.calls)
+
+
+def test_connection_owner_verification_precedes_any_browser_read():
+    from giji.teams_connection import TeamsConnectionError
+
+    factory = Mock()
+    connection = Mock(connect_endpoint=Mock(side_effect=TeamsConnectionError("Teams の接続先ではありません。")))
+    provider = TeamsDesktopCalendar(connection, client_factory=factory)
+    with pytest.raises(TeamsCalendarError, match="接続先"):
+        provider.fetch_today({})
+    factory.assert_not_called()
+
+
+def test_root_limit_is_explicit_and_prevents_complete_empty_coverage():
+    client = PopupCDP(observed=snapshot(events=[], empty_text="No events today"))
+    original_call = client.call
+
+    def call(method, params=None, session=None):
+        if method == "Target.getTargets":
+            return {"targetInfos": [{"targetId": f"popup-{index}", "type": "page",
+                                     "url": "https://outlook.office.com/hosted/calendar/"}
+                                    for index in range(5)]}
+        return original_call(method, params, session)
+
+    client.call = call
+    provider = TeamsDesktopCalendar(Mock(connect_endpoint=Mock(return_value=ENDPOINT)), client_factory=lambda *args: client)
+    assert provider.fetch_today({}) == []
+    status = provider.status()
+    assert status["coverage"] == "visible_only"
+    assert any("ウィンドウが多い" in warning for warning in status["warnings"])

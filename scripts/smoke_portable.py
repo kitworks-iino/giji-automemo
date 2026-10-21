@@ -154,7 +154,7 @@ def check(executable: Path) -> None:
         assert len(uia.stdout) <= 4096 and not uia.stderr, "Unexpected UIA worker diagnostics."
         result = json.loads(uia.stdout)
         assert uia.returncode == 1 and result.get("ok") is False
-        assert result.get("error") in {"not_running", "unreadable", "calendar"}, (
+        assert result.get("error") in {"not_running", "unreadable", "calendar", "background"}, (
             "The native Teams UIA worker failed to load its packaged dependencies."
         )
     subprocess.run(

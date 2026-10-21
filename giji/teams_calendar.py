@@ -1,11 +1,15 @@
 """Read the signed-in Teams desktop calendar through its local accessibility UI.
 
 This is an explicitly enabled, version-dependent preview, not a Microsoft API.
-Only rendered DOM/accessibility observations are read. No cookies, tokens,
+Only loaded DOM/accessibility observations are read. No cookies, tokens,
 application state, network interception or private calendar endpoints are used.
 The supported CDP protocol is documented at chromedevtools.github.io/devtools-protocol/.
 Teams' calendar may be an out-of-process iframe; a top-page-only reader is not
-sufficient. Every calendar frame must be a visible descendant of a Teams page.
+sufficient. Calendar frames must be laid-out descendants of a Teams page, or a
+dedicated hosted-calendar page inside the already verified Teams-owned browser.
+No foregrounding, activation, navigation or refresh commands are issued. A
+background DOM observation cannot prove that Teams has refreshed server data;
+Teams may suspend or unload its WebView, which this reader cannot reverse.
 """
 
 from __future__ import annotations
@@ -88,19 +92,33 @@ def _allowed_origin(url: str, *, calendar: bool = False) -> bool:
         return False
 
 
+def _allowed_calendar_popup(url: str) -> bool:
+    """The hosted Calendar app only, inside a separately verified Teams browser.
+
+    Ordinary Outlook /calendar pages are not Teams popup roots. This predicate
+    is not process verification: TeamsConnectionManager must verify the exact
+    listener's package, process ancestry and Windows user before connecting.
+    """
+    if (not isinstance(url, str) or any(char.isspace() or ord(char) < 32 for char in url)
+            or not _allowed_origin(url, calendar=True)):
+        return False
+    parsed = urlsplit(url)
+    return parsed.hostname in _OUTLOOK_HOSTS and parsed.path in {"/hosted/calendar", "/hosted/calendar/"}
+
+
 # These are semantic observations, not undocumented Teams-specific selectors.
 # Attribute values are used only if they actually exist. A Today button alone
 # NEVER proves which date the calendar displays. No event card is clicked.
 _SNAPSHOT_JS = r"""(() => {
-  const visible = e => {
+  const cssVisible = e => {
     if (!e || !e.isConnected) return false;
     for (let p=e; p; p=p.parentElement) {
       const s=getComputedStyle(p);
       if (p.getAttribute('aria-hidden')==='true' || s.display==='none' || s.visibility==='hidden') return false;
     }
-    const r=e.getBoundingClientRect();
-    return r.width>0 && r.height>0 && r.bottom>0 && r.right>0 && r.top<innerHeight && r.left<innerWidth;
+    return true;
   };
+  const visible = e => { if(!cssVisible(e)) return false; const r=e.getBoundingClientRect(); return r.width>0 && r.height>0; };
   const text=e => ((typeof e.innerText==='string' ? e.innerText : e.textContent) || '').trim().slice(0, 8000);
   const name=e => (e.getAttribute('aria-label') || e.getAttribute('title') || text(e)).trim();
   const norm=s => s.replace(/\s+/g,' ').trim();
@@ -108,7 +126,8 @@ _SNAPSHOT_JS = r"""(() => {
   const today=controls.some(e => /^(Today|今日|本日)$/i.test(norm(name(e))));
   const calendarURL=/^https:\/\/outlook\.(?:office\.com|office365\.com|cloud\.microsoft)\/(?:hosted\/)?calendar(?:\/|$)/i.test(location.href);
   const grid=[...document.querySelectorAll('[role="grid"],[role="list"],[role="region"],[role="main"],main')].some(e => visible(e) && /calendar|予定表|カレンダー/i.test(name(e).slice(0,200)));
-  const calendarPresent=calendarURL || (today && grid);
+  const documentRenderable=cssVisible(document.documentElement) && (!document.body || cssVisible(document.body)) && innerWidth>0 && innerHeight>0;
+  const calendarPresent=documentRenderable && (calendarURL || (today && grid));
   const outsidePicker=e => !e.closest('[role="dialog"],[role="navigation"],nav,aside');
   const headings=[...document.querySelectorAll('h1,h2,h3,[role="heading"],[role="columnheader"]')].filter(e=>visible(e)&&outsidePicker(e));
   const dateTexts=headings.flatMap(e => [name(e), e.getAttribute('data-date') || '', e.getAttribute('datetime') || '']).filter(Boolean).slice(0,200);
@@ -139,7 +158,7 @@ _SNAPSHOT_JS = r"""(() => {
   }
   const emptyPattern=/^(?:No (?:events|meetings)(?: scheduled| today| for today)?|There are no (?:events|meetings)(?: scheduled| today| for today)?|Nothing scheduled(?: today| for today)?|(?:今日|本日)の(?:予定|イベント|会議)はありません|(?:今日|本日)は(?:予定|イベント|会議)がありません|(?:予定|イベント|会議)(?:は|が)ありません)[.!。]?$/i;
   const empty=calendarPresent ? [...document.querySelectorAll('[role="status"],p,span,div')].slice(0,15000).find(e=>visible(e) && outsidePicker(e) && e.closest('[role="grid"],[role="main"],main') && e.children.length===0 && emptyPattern.test(text(e))) : null;
-  return {url:location.href,timezone:Intl.DateTimeFormat().resolvedOptions().timeZone,calendar_present:calendarPresent,date_texts:dateTexts,day_column_texts:dayColumns,day_view:dayView,empty_text:empty ? text(empty) : '',events,truncated:candidates.length>=10000 || events.length>=500};
+  return {url:location.href,timezone:Intl.DateTimeFormat().resolvedOptions().timeZone,document_visibility:document.visibilityState,document_renderable:documentRenderable,calendar_present:calendarPresent,date_texts:dateTexts,day_column_texts:dayColumns,day_view:dayView,empty_text:empty ? text(empty) : '',events,truncated:candidates.length>=10000 || events.length>=500};
 })()"""
 
 _VISIBLE_FRAME_JS = """function() {
@@ -148,7 +167,7 @@ _VISIBLE_FRAME_JS = """function() {
     if(p.getAttribute('aria-hidden')==='true'||s.display==='none'||s.visibility==='hidden') return false;
   }
   const r=this.getBoundingClientRect();
-  return r.width>0&&r.height>0&&r.bottom>0&&r.right>0&&r.top<innerHeight&&r.left<innerWidth;
+  return r.width>0&&r.height>0;
 }"""
 
 
@@ -350,10 +369,15 @@ class _CalendarReader:
     def frames(self) -> list[dict]:
         targets = self.client.call("Target.getTargets").get("targetInfos", [])
         target_ids = {target.get("targetId") for target in targets if target.get("type") == "iframe"}
-        roots = [target for target in targets if target.get("type") == "page" and _allowed_origin(target.get("url", ""))]
+        roots = [target for target in targets if target.get("type") == "page"
+                 and (_allowed_origin(target.get("url", "")) or _allowed_calendar_popup(target.get("url", "")))]
+        roots.sort(key=lambda target: not _allowed_calendar_popup(target.get("url", "")))
         frames = []
         seen = set()
+        if len(roots) > 4:
+            self.warnings.append("Teams の予定表ウィンドウが多いため、一部だけを読み取りました。")
         for root in roots[:4]:
+            popup_root = _allowed_calendar_popup(root.get("url", ""))
             # Meeting popout pages are never navigation targets or calendars.
             if re.search(r"/(?:v2/)?(?:meeting|meetup-join|calling)(?:/|$)", urlsplit(root["url"]).path, re.I):
                 continue
@@ -362,10 +386,13 @@ class _CalendarReader:
 
             def visit(node: dict, parent_session: str, depth: int = 0) -> None:
                 if depth > 8 or len(frames) >= 30:
+                    self.warnings.append("Teams の画面構造が大きいため、一部だけを読み取りました。")
                     return
                 frame = node.get("frame", {})
                 frame_id, url = frame.get("id"), frame.get("url", "")
-                if not frame_id or frame_id in seen or not _allowed_origin(url, calendar=depth > 0):
+                allowed = (_allowed_calendar_popup(url) if depth == 0 and popup_root
+                           else _allowed_origin(url, calendar=depth > 0))
+                if not frame_id or frame_id in seen or not allowed:
                     return
                 if depth and not self._frame_visible(frame_id, parent_session):
                     return
@@ -373,7 +400,8 @@ class _CalendarReader:
                 frame_session = self.attach(frame_id, node.get("_session")) if frame_id in target_ids or node.get("_session") else parent_session
                 context = self.client.contexts(frame_session).get(frame_id)
                 if context is not None:
-                    frames.append({"session": frame_session, "context": context, "frame_id": frame_id, "url": url})
+                    frames.append({"session": frame_session, "context": context, "frame_id": frame_id,
+                                   "url": url, "calendar_popup": popup_root and depth == 0})
                 # OOPIF's Page tree may contain descendants omitted by the root.
                 branch = node
                 if frame_session != parent_session:
@@ -392,7 +420,10 @@ class _CalendarReader:
         observed = self.client.evaluate(_SNAPSHOT_JS, frame["session"], frame["context"])
         if not isinstance(observed, dict) or not _allowed_origin(observed.get("url", ""), calendar=True):
             raise TeamsCalendarError("Teams 予定表の表示元を確認できません。")
-        if not observed.get("calendar_present"):
+        if frame.get("calendar_popup") and not _allowed_calendar_popup(observed.get("url", "")):
+            raise TeamsCalendarError("Teams の予定表ウィンドウの表示元が変わりました。")
+        if not observed.get("calendar_present") or observed.get("document_renderable") is False:
+            observed["calendar_present"] = False
             return observed
         if observed.get("truncated"):
             self.warnings.append("画面の予定候補が多いため、読み取れた範囲だけを表示します。")
@@ -433,7 +464,11 @@ class _CalendarReader:
         observations = [(frame, self.snapshot(frame)) for frame in frames]
         calendars = [(frame, value) for frame, value in observations if value.get("calendar_present")]
         if not calendars:
-            raise TeamsCalendarError("Teams のカレンダーを開いて、今日の予定を日表示にしてください。giji は Teams の画面を自動操作しません。")
+            raise TeamsCalendarError(
+                "Teams の予定表が未読込・休止中、または別の画面に切り替わっています。"
+                "初回はカレンダーを開いて今日を日表示にし、必要なら予定表を別ウィンドウに残してください。"
+                "giji は Teams を前面化・画面操作しません。"
+            )
         return [value for _, value in calendars]
 
 
@@ -446,7 +481,8 @@ class TeamsDesktopCalendar:
         self._active_client = None
         self._closed = False
         self._public = {"provider": "teams_desktop", "state": "not_synced", "connected": False,
-                        "detail": "Teams の予定表はまだ読み取っていません。", "coverage": "unknown", "warnings": []}
+                        "detail": "Teams の予定表はまだ読み取っていません。", "coverage": "unknown", "warnings": [],
+                        "document_visibility": "unknown", "freshness": "unknown"}
 
     def status(self, settings: dict | None = None) -> dict:
         with self._lock:
@@ -477,16 +513,26 @@ class TeamsDesktopCalendar:
             meetings = {meeting["id"]: meeting for result in parsed for meeting in result["meetings"]}
             coverage = "complete" if len(parsed) == len(snapshots) == 1 and parsed[0]["coverage"] == "complete" and not reader.warnings else "visible_only"
             warnings = list(dict.fromkeys(reader.warnings + [warning for result in parsed for warning in result["warnings"]]))
-            if coverage == "visible_only" and not warnings:
-                warnings.append("画面で確認できた予定のみです。すべての予定を取得した保証はありません。")
+            visibility_states = {snapshot.get("document_visibility", "unknown") for snapshot in snapshots}
+            visibility_states = {state if state in {"visible", "hidden"} else "unknown" for state in visibility_states}
+            visibility = next(iter(visibility_states)) if len(visibility_states) == 1 else "mixed"
+            if visibility != "visible":
+                # A background empty view is not evidence that Teams synced an
+                # empty day. Preserve any previously observed appointments.
+                coverage = "visible_only"
+                warnings.append("予定表をバックグラウンドまたは表示状態不明のまま読み取りました。Teams の休止中は予定の変更が反映されない場合があります。")
+            warnings.append("Teams が読み込み済みの予定表情報です。サーバー上の最新情報との一致は確認していません。")
             with self._lock:
                 self._public.update(state="connected", connected=True, coverage=coverage, warnings=warnings,
-                                    detail="Teams の画面に表示された今日の予定を取得しました。" if meetings else "今日の予定がないことを画面で確認しました。")
+                                    document_visibility=visibility, freshness="dom_observed",
+                                    detail="Teams が読み込み済みの今日の予定を、前面化せず取得しました。" if meetings
+                                    else "読み込み済みの予定表は今日の予定なしと表示しています。")
             return sorted(meetings.values(), key=lambda item: (item["start"], item["id"]))
         except Exception as exc:
             safe = str(exc) if isinstance(exc, (TeamsCalendarError, TeamsConnectionError)) else "Teams 予定表を読み取れませんでした。Teams のカレンダーを開いて再試行してください。"
             with self._lock:
-                self._public.update(state="error", connected=False, detail=safe, coverage="unknown", warnings=[])
+                self._public.update(state="error", connected=False, detail=safe, coverage="unknown", warnings=[],
+                                    document_visibility="unknown", freshness="unknown")
             raise TeamsCalendarError(safe) from None
         finally:
             if client:

@@ -153,7 +153,13 @@ export type TeamsConnection = {
 export type Health = {
   platform: string;
   teams: { state: string; detail: string };
-  calendar: { state: string; detail: string; last_sync: string | null };
+  calendar: {
+    state: string;
+    detail: string;
+    last_sync: string | null;
+    last_attempt?: string | null;
+    last_read_succeeded?: boolean;
+  };
   pipeline: { state: string; detail: string };
   recording: null | {
     session_id: string;

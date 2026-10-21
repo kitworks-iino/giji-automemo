@@ -7,8 +7,8 @@ $Repository = Split-Path $PSScriptRoot -Parent
 Push-Location $Repository
 try {
     if ($env:OS -ne "Windows_NT") { throw "Build this package on Windows x64." }
-    & $Python -c "import struct, sys; assert sys.version_info[:2] == (3, 11) and struct.calcsize('P') == 8"
-    if ($LASTEXITCODE -ne 0) { throw "Python 3.11 x64 is required." }
+    & $Python (Join-Path $PSScriptRoot "check_python.py") --require-minor 3.13
+    if ($LASTEXITCODE -ne 0) { throw "Standard Python 3.13 x64 is required for portable builds." }
 
     Push-Location (Join-Path $Repository "frontend")
     try {

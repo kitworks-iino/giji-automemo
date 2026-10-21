@@ -60,7 +60,8 @@ class GijiService:
         self.health = {
             "platform": platform.system(),
             "teams": {"state": "unknown", "detail": "Teamsを確認しています"},
-            "calendar": {"state": "disconnected", "detail": "Teamsで今日のカレンダーを日表示で開いてください", "last_sync": None},
+            "calendar": {"state": "disconnected", "detail": "Teamsで今日のカレンダーを日表示で一度開いてください。前面に置き続ける必要はありません。",
+                         "last_sync": None, "last_attempt": None, "last_read_succeeded": False},
             "pipeline": {"state": "idle", "detail": "待機中"},
             "warnings": [],
         }
@@ -130,8 +131,8 @@ class GijiService:
         connection = {
             "provider": self.store.settings()["calendar_source"],
             "state": health["calendar"]["state"],
-            "connected": health["calendar"]["state"] == "connected"
-                or (health["calendar"]["state"] == "syncing" and bool(health["calendar"]["last_sync"])),
+            "connected": health["calendar"]["state"] in {"connected", "syncing"}
+                and health["calendar"].get("last_read_succeeded", False),
             "detail": health["calendar"]["detail"],
             "coverage": health["calendar"].get("coverage", "unknown"),
             "warnings": health["calendar"].get("warnings", []),
@@ -161,7 +162,8 @@ class GijiService:
             # An explicit card selection may use today's cache during an outage.
             return self.today_meetings()
         calendar = self.health["calendar"]
-        if calendar["state"] not in {"connected", "syncing"} or not calendar["last_sync"]:
+        if (calendar["state"] not in {"connected", "syncing"} or not calendar["last_sync"]
+                or not calendar.get("last_read_succeeded", False)):
             return []
         synced = datetime.fromisoformat(calendar["last_sync"]).astimezone()
         if synced.date() != datetime.now().astimezone().date():
@@ -206,8 +208,8 @@ class GijiService:
                 self.armed_id = None
                 self.last_calendar_ids.clear()
                 self.health["calendar"] = {
-                    "state": "disconnected", "last_sync": None,
-                    "detail": ("Teamsで今日のカレンダーを日表示で開き、同期してください"
+                    "state": "disconnected", "last_sync": None, "last_attempt": None, "last_read_succeeded": False,
+                    "detail": ("Teamsで今日のカレンダーを日表示で一度開いてください。最小化・背面のまま取得を試みます。"
                                if settings["calendar_source"] == "teams_desktop"
                                else "Outlookを起動して予定を同期してください"
                                if settings["calendar_source"] == "outlook_desktop"
@@ -223,10 +225,17 @@ class GijiService:
 
         async with self.sync_lock:
             settings = self.store.settings()
+            attempted_at = utcnow()
+            self.health["calendar"]["last_attempt"] = attempted_at
             if settings["calendar_source"] == "graph" and not self.calendar.is_connected():
-                self.health["calendar"].update(state="disconnected", detail="Microsoftアカウントを接続してください")
+                self.last_calendar_ids.clear()
+                self.health["calendar"].update(state="disconnected", last_read_succeeded=False,
+                                               detail="Microsoftアカウントを接続してください")
                 return
-            self.health["calendar"].update(state="syncing", detail="今日の予定を同期中")
+            detail = "今日の予定を読み取り中"
+            if self.health["calendar"]["last_sync"] and not self.health["calendar"].get("last_read_succeeded", False):
+                detail = "前回取得した予定を保持して、読み取りを再試行中です。最新の取得はまだ確認できていません。"
+            self.health["calendar"].update(state="syncing", detail=detail)
             try:
                 meetings = await asyncio.to_thread(self.calendar.fetch_today, settings)
                 self.last_calendar_ids = {m["id"] for m in meetings}
@@ -244,13 +253,16 @@ class GijiService:
                 self.health["calendar"] = {
                     "state": "connected", "detail": provider_status.get("detail") or "同期済み",
                     "coverage": coverage, "warnings": provider_status.get("warnings", []),
-                    "last_sync": utcnow(),
+                    "last_sync": utcnow(), "last_attempt": attempted_at, "last_read_succeeded": True,
                 }
             except CalendarError as exc:
-                self.health["calendar"].update(state="error", detail=str(exc))
+                self.last_calendar_ids.clear()
+                self.health["calendar"].update(state="error", detail=str(exc), last_read_succeeded=False,
+                                               coverage="unknown")
             except Exception:
+                self.last_calendar_ids.clear()
                 self.health["calendar"].update(
-                    state="error", detail=(
+                    state="error", last_read_succeeded=False, coverage="unknown", detail=(
                         "予定を同期できません。従来版Outlookを起動し、同じWindowsユーザーでやり直してください。"
                         if settings["calendar_source"] == "outlook_desktop"
                         else "Teamsの予定を読み取れません。設定で接続状態を確認し、Teamsの今日のカレンダーを開いてください。"

@@ -7,6 +7,8 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 import sys
+import struct
+import sysconfig
 import tempfile
 import wave
 
@@ -16,6 +18,7 @@ def teams_runtime_self_test(folder: Path) -> None:
     import websocket
     import win32api
     import win32con
+    import win32gui
     import win32security
     from tzlocal import get_localzone_name
     from zoneinfo import ZoneInfo
@@ -34,6 +37,12 @@ def teams_runtime_self_test(folder: Path) -> None:
     assert websocket.create_connection and websocket.__version__
     assert win32security.GetNamedSecurityInfo and win32api.GetCurrentProcess
     assert win32con.TOKEN_QUERY
+    desktop = win32gui.GetDesktopWindow()
+    assert desktop and win32gui.IsWindow(desktop)
+    # Read-only native calls used to identify background windows. This does
+    # not enumerate, foreground, restore, or interact with a Teams window.
+    assert isinstance(win32gui.IsIconic(desktop), int)
+    assert isinstance(win32gui.IsWindowVisible(desktop), int)
     assert callable(cleanup_main), "The detached cleanup helper must be included."
     assert TeamsDesktopCalendar
     # Windows local-zone mapping and IANA database are both included. Merely
@@ -80,6 +89,11 @@ def teams_runtime_self_test(folder: Path) -> None:
 def portable_self_test() -> None:
     if sys.platform != "win32" or not getattr(sys, "frozen", False):
         raise RuntimeError("Run the portable self-test with the frozen Windows executable.")
+    assert sys.version_info[:2] == (3, 13), "The portable runtime must be Python 3.13."
+    assert (struct.calcsize("P") == 8 and sysconfig.get_platform() == "win-amd64"
+            and not sysconfig.get_config_var("Py_GIL_DISABLED")), (
+        "The portable runtime must be standard x64 Python."
+    )
     os.environ["HF_HUB_OFFLINE"] = "1"
     os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
@@ -161,6 +175,7 @@ def portable_self_test() -> None:
 
     print(json.dumps({
         "portable_self_test": "passed",
+        "python": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro} / x64",
         "whisper": "small / CPU int8 / local files",
         "diarization": "bundled ONNX / CPU",
         "integrations": "native imports + UI Automation + Teams setup-neutral status/parser/cleanup imports",

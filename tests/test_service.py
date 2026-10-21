@@ -1,4 +1,5 @@
 import asyncio
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import Mock
@@ -286,6 +287,50 @@ async def test_failed_sync_keeps_previous_calendar_and_reports_error(service):
     assert service.store.meetings() == [meeting]
     assert service.health["calendar"]["state"] == "error"
     assert "private token" not in str(service.health)
+
+
+@pytest.mark.asyncio
+async def test_background_read_failure_and_retry_never_relabel_cached_meetings_as_current(service):
+    from giji.microsoft import CalendarError
+
+    meeting = {**current_meeting("background"), "join_url": "https://teams.microsoft.com/meet/123"}
+    service.calendar.status.return_value = {"coverage": "visible_only", "warnings": []}
+    service.calendar.fetch_today.return_value = [meeting]
+    await service.sync()
+    last_success = service.health["calendar"]["last_sync"]
+    assert service.snapshot()["microsoft"]["connected"]
+    assert service.matchable_meetings()[0]["id"] == "background"
+
+    service.calendar.fetch_today.side_effect = CalendarError("Teamsの予定表情報は現在利用できません。")
+    await service.sync()
+    assert service.store.meetings()[0]["id"] == "background"
+    assert service.health["calendar"]["last_sync"] == last_success
+    assert service.health["calendar"]["last_attempt"]
+    assert not service.health["calendar"]["last_read_succeeded"]
+    assert not service.last_calendar_ids
+
+    entered, release = threading.Event(), threading.Event()
+
+    def blocked_retry(_settings):
+        entered.set()
+        assert release.wait(3), "The test must release its reader thread."
+        return [meeting]
+
+    service.calendar.fetch_today.side_effect = blocked_retry
+    pending = asyncio.create_task(service.sync())
+    try:
+        assert await asyncio.to_thread(entered.wait, 3)
+        assert service.health["calendar"]["state"] == "syncing"
+        assert not service.snapshot()["microsoft"]["connected"]
+        assert service.matchable_meetings() == []
+        assert service.health["calendar"]["last_sync"] == last_success
+        assert service.store.meetings()[0]["id"] == "background"
+    finally:
+        release.set()
+        await pending
+    assert service.health["calendar"]["last_read_succeeded"]
+    assert service.snapshot()["microsoft"]["connected"]
+    assert service.matchable_meetings()[0]["id"] == "background"
 
 
 @pytest.mark.asyncio

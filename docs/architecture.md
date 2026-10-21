@@ -1,10 +1,10 @@
 # 実装の構成
 
-アプリは同じWindows PC上のブラウザー画面とローカルプロセスで動きます。Windows配布版にはPython実行環境・画面・標準モデルを同梱します。公開サーバーやMicrosoft Entraのアプリ登録は、標準の構成には必要ありません。
+アプリは同じWindows PC上のブラウザー画面とローカルプロセスで動きます。v0.4のWindows配布版にはPython 3.13実行環境・画面・標準モデルを同梱します。ソースのセットアップも3.13を優先し、CIの対象は3.11と3.13です。各版の検証結果は [検証記録](verification.md) に分けて記載します。公開サーバーやMicrosoft Entraのアプリ登録は、標準の構成には必要ありません。
 
 ```mermaid
 flowchart LR
-  Teams[Teams デスクトップ] -->|UI Automationで表示済みカレンダーを読む| Reader["予定の読み取り / 補助プロセス / プレビュー"]
+  Teams[Teams デスクトップ] -->|UI Automationで読み込み済みカレンダーを読む| Reader["予定の読み取り / 補助プロセス / プレビュー"]
   Teams -.->|任意のローカルCDP方式| Reader
   Reader --> Service["Python / FastAPI"]
   Outlook["任意: Outlook（クラシック）"] -.->|公開Object Modelで予定を読む| Worker["補助プロセス / COM STA"]
@@ -52,9 +52,11 @@ APIのエンティティとインターフェースは [CONTRACT.md](../CONTRACT
 
 ## Teamsデスクトップからの予定読み取り
 
-v0.3の標準取得元は、このPCにあるTeamsのカレンダーです。Windows UI Automationで、表示済みのカレンダーのアクセシビリティ情報を確認します。標準方式はレジストリ設定やデバッグ接続を使わず、Teamsの再起動も要求しません。Teamsの画面を変更せず、カレンダー・今日・日表示・予定・参加ボタンをクリックしません。
+v0.4の標準取得元は、このPCにあるTeamsのカレンダーです。Windows UI Automationで、Teamsが保持するカレンダーのアクセシビリティ情報を確認します。標準方式はレジストリ設定やデバッグ接続を使わず、Teamsの再起動も要求しません。Teamsのウィンドウを復元・前面化せず、カレンダー・今日・日表示・予定・参加ボタンをクリックしません。
 
-予定読み取りはメインスレッドをMTAにした補助プロセスで実行し、応答しないUIAプロバイダーを時間制限で切り離します。利用者が今日の日表示を開き、標準60秒ごとに読み取れる予定を更新します。日本語・英語の表示を対象とし、完全な日付と開始・終了時刻を確認できない予定は推測しません。標準方式の時刻はWindowsのタイムゾーンを前提にするため、Teamsが異なるタイムゾーンを表示している場合は両者を合わせて確認する必要があります。
+予定読み取りはメインスレッドをMTAにした補助プロセスで実行し、応答しないUIAプロバイダーを時間制限で切り離します。利用者が最初に今日の日表示を開き、標準60秒ごとに読み取れる予定を確認します。Windowsが最小化または非表示と判断した所有ウィンドウも探索し、その条件が確認された場合だけUIAの画面外判定を許容します。選択中のカレンダーであることと独立した日付情報を確認し、`aria-hidden` 等で明示的に隠された部分や非選択画面のキャッシュは除外します。日本語・英語の表示を対象とし、完全な日付と開始・終了時刻を確認できない予定は推測しません。標準方式の時刻はWindowsのタイムゾーンを前提にするため、Teamsが異なるタイムゾーンを表示している場合は両者を合わせて確認する必要があります。
+
+最小化や非表示のウィンドウを探索することは、その内容が必ず存在することを意味しません。TeamsがWebViewを破棄・休止した場合や、カレンダーが未読込みの場合には取得できません。無条件のトレイ常駐・全件取得を実現する経路ではなく、カレンダーを自動で開く代替動作もありません。`last_sync` は画面の読取り成功時刻であり、Microsoft側のデータ更新や受信完了の証明ではありません。
 
 Microsoftのパスワード、Cookie、アクセストークン、認証キャッシュは取得せず、Graphや非公開の予定APIも使いません。Teams内にOutlookのhosted calendarが表示されても、それはTeamsの画面であり、PCのOutlookアプリやCOMを必要としません。
 
@@ -68,7 +70,9 @@ Microsoftのパスワード、Cookie、アクセストークン、認証キャ�
 
 一時設定は接続確認、10分の期限、解除、アプリ終了で復元します。独立した補助プロセスも期限とアプリ終了を監視します。ただし、起動中のTeamsのデバッグポートは設定復元だけでは閉じず、Teamsが終了するまで残ります。利用後の通常再起動を案内します。既存の管理設定は上書きしません。[MicrosoftのWebView2接続仕様](https://learn.microsoft.com/en-us/microsoft-edge/webview2/how-to/debug-visual-studio-code)
 
-Teams内のカレンダーが別オリジン・別プロセスのiframeにある場合は、Teams配下の対象frame・targetを確認して対応するCDPセッションで読み取ります。ブラウザーの同一オリジン保護を無効にせず、非公開APIにも接続しません。この方式もクリックや画面移動は行いません。[Teamsの構成](https://techcommunity.microsoft.com/blog/microsoftteamsblog/microsoft-teams-advantages-of-the-new-architecture/3775704)、[CDPの公式スキーマ](https://github.com/ChromeDevTools/devtools-protocol)
+Teams内のカレンダーが別オリジン・別プロセスのiframeにある場合は、Teams配下の対象frame・targetを確認して対応するCDPセッションで読み取ります。Teamsに所有されるカレンダーの別ウィンドウも検証して対象にし、読み込み済みなら表示範囲外の要素を読む一方、非表示・非選択のキャッシュは除外します。ブラウザーの同一オリジン保護を無効にせず、非公開APIにも接続しません。この方式も復元・前面化・クリック・画面移動は行いません。[Teamsの構成](https://techcommunity.microsoft.com/blog/microsoftteamsblog/microsoft-teams-advantages-of-the-new-architecture/3775704)、[CDPの公式スキーマ](https://github.com/ChromeDevTools/devtools-protocol)
+
+MicrosoftはWebView2ブラウザーフラグの本番利用を推奨していません。CDP方式の起動フラグやTeamsのDOMを安定した外部APIとして扱わず、WebViewの休止・破棄も考慮します。CDP接続や評価要求が必ず非表示WebViewを再開する保証はありません。[ブラウザーフラグの制限](https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/webview-features-flags)、[TrySuspend / Resume](https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/icorewebview2_3#trysuspend)
 
 どちらの方式でも、予定取得の失敗を録音停止の条件には使わず、別の方式・取得元へ自動で切り替えません。利用手順と制限は [Teamsデスクトップ連携](teams-desktop.md) にあります。
 

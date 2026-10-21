@@ -1,6 +1,8 @@
 # Internal implementation contract
 
-Windows 11 local application, Python 3.11+, FastAPI loopback server, React/Vite UI.
+Windows 11 x64 local application, standard CPython 3.11–3.13 (3.13 preferred),
+FastAPI loopback server, React/Vite UI. Portable builds include CPython 3.13;
+the system Python installation does not control the portable executable.
 Meeting/session timestamps are ISO8601 UTC; the CDP preparation `expires_at`
 is a Unix timestamp in seconds. Public API paths `/api`. Request authentication:
 `Authorization: Bearer <runtime token>`; token supplied to SPA in URL fragment
@@ -47,7 +49,8 @@ between calendar sources or Teams reader modes.
   teams_connection:TeamsConnection,armed_meeting_id:null|string,
   health:{platform,
   teams:{state:"in_meeting"|"idle"|"unknown"|"unavailable",detail:string},
-  calendar:{state,detail,last_sync:null|string,coverage?:string,warnings?:[string]},
+  calendar:{state,detail,last_sync:null|string,last_attempt?:null|string,
+  last_read_succeeded?:bool,coverage?:string,warnings?:[string]},
   pipeline:{state,detail},
   recording:null|{session_id,seconds,microphone_level,loopback_level},
   models:{ready:bool,detail:string},warnings:[string]},now:string}`
@@ -113,12 +116,23 @@ whose main thread uses COM MTA. Frozen worker:
 Teams restart, authentication extraction, UI click, focus change, or Graph/
 private API request. Windows timezone is explicit input to the parser, and
 status warns that Teams' own display timezone must match. Successful UIA
-observations always report `coverage:"visible_only"`.
+observations always report `coverage:"visible_only"` (legacy enum meaning partial
+observations, not a requirement for a visible native window). Owned minimized
+and hidden top-level windows are enumerated without foreground/restore calls.
+Only native state evidence permits ignoring IsOffscreen; explicit ARIA-hidden
+subtrees remain excluded. Background observations require a selected Calendar
+navigation item and verified calendar/date scope. Missing/discarded/suspended
+trees are failures, never empty calendars. Retained background observations do
+not establish that Teams refreshed data from Microsoft.
 
 `TeamsDesktopCalendar(connection,*,timeout_seconds=20,client_factory=CDPClient)`
 is the optional CDP reader. `fetch_today(settings)->list[Meeting]`,
 `status(settings=None)->dict`, `close()`. It uses only a verified loopback
 endpoint owned by the same-user Teams process and its related calendar frames.
+Exact hosted-calendar popup targets in the verified Teams WebView process may
+also be read. CSS/ARIA-hidden inactive views remain excluded, but mounted
+calendar nodes outside the viewport are eligible. Document visibility and DOM
+observation freshness are diagnostic, not server-update timestamps.
 CDP commands read existing display information; they do not click, navigate,
 join meetings, change browser security, or read authentication material.
 
@@ -143,7 +157,11 @@ thread. No Graph credentials, Entra registration, token extraction or private
 Teams endpoints. `status(settings)->{state,connected,provider,detail,account}`;
 `close()`. Frozen worker command: `GijiAutoMemo.exe --calendar-worker`.
 No desktop failure falls back to another source or reader. A failed sync retains
-cached events and reports the failure. Partial Teams sync merges today's
+cached events and reports the failure. `last_sync` remains the last successful
+read time for compatibility; `last_attempt` is the latest attempt and
+`last_read_succeeded` remains false throughout a retry after failure. A failed
+read clears automatic matching IDs, and retrying does not relabel cached data
+as a successful current observation. Partial Teams sync merges today's
 observations and can retain stale moved/cancelled meetings. Automatic matching
 uses only the latest observed IDs with a valid Teams join URL. Calendar items
 without visible join links may be offline appointments and cannot be inferred

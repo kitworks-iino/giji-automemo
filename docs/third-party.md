@@ -8,6 +8,7 @@ ZIP内の `licenses/` に第三者のライセンス・通知、`third-party-sou
 
 | 用途 | プロジェクト・資料 |
 | --- | --- |
+| 同梱Python実行環境 | [CPython 3.13 / PSFライセンス等](https://docs.python.org/3.13/license.html)。v0.4のビルドに使用した版のライセンス・対応ソースを収集 |
 | ローカル文字起こし | [faster-whisper / MIT](https://github.com/SYSTRAN/faster-whisper) |
 | Whisper重み | [OpenAI Whisper / MIT](https://github.com/openai/whisper) を基にしたfaster-whisper対応モデル |
 | ローカル話者分離 | [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) |

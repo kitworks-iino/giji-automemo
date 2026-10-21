@@ -1,4 +1,4 @@
-# Build on Windows x64 with Python 3.11. Models live beside the executable;
+# Build on Windows x64 with Python 3.13. Models live beside the executable;
 # frontend assets remain relative to giji/api.py inside PyInstaller's _internal.
 from pathlib import Path
 
@@ -28,6 +28,7 @@ hiddenimports = [
     "win32security",
     "win32api",
     "win32con",
+    "win32gui",
     "pythoncom",
     "pywintypes",
     "comtypes.gen.UIAutomationClient",

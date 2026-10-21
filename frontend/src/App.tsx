@@ -109,7 +109,7 @@ function calendarConnection(snapshot: Snapshot | null): MicrosoftConnection {
     state: connected ? "connected" : "disconnected",
     detail:
       snapshot?.health.calendar.detail ??
-      "Teamsで本日のカレンダーを日表示で開き、予定を同期してください。",
+      "Teamsで一度、本日のカレンダーを日表示で開いてください。予定表を保持していれば、最小化・バックグラウンドでも読み取ります。",
   };
 }
 
@@ -135,6 +135,88 @@ function teamsConnection(snapshot: Snapshot | null): TeamsConnection {
       debug_active: false,
       expires_at: null,
     }
+  );
+}
+
+function CalendarReadStatus({ snapshot }: { snapshot: Snapshot }) {
+  const source = calendarConnection(snapshot);
+  const calendar = snapshot.health.calendar;
+  const teams = source.provider === "teams_desktop";
+  const reading = calendar.state === "syncing";
+  const failed =
+    calendar.last_read_succeeded === false ||
+    !["connected", "syncing"].includes(calendar.state);
+  const retained = snapshot.meetings.some(
+    (meeting) => !meeting.cancelled && !meeting.id.startsWith("demo-"),
+  );
+  const cached = retained && failed;
+  const timestamp = (value: string) => {
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime())
+      ? "時刻を確認できません"
+      : parsed.toLocaleString("ja-JP", {
+          year: "numeric",
+          month: "numeric",
+          day: "numeric",
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+        });
+  };
+  return (
+    <div
+      className={cx("calendar-read-status", cached && "cached")}
+      role="status"
+    >
+      <div className="calendar-read-heading">
+        {reading ? (
+          <LoaderCircle size={14} className="spin" />
+        ) : cached ? (
+          <CircleHelp size={14} />
+        ) : (
+          <Clock3 size={14} />
+        )}
+        <strong>
+          {reading
+            ? "予定を読み取り中"
+            : cached
+              ? "前回取得した予定を表示しています"
+              : failed
+                ? "予定の読み取りを確認できません"
+                : "予定を読み取りました"}
+        </strong>
+      </div>
+      {cached && (
+        <p className="calendar-cache-warning">
+          直近の読み取りを確認できないため、予定の変更・取消が反映されていない可能性があります。
+        </p>
+      )}
+      <p>{calendar.detail || source.detail}</p>
+      <dl className="calendar-read-times">
+        <div>
+          <dt>{teams ? "最終読み取り（PC内）" : "最終取得"}</dt>
+          <dd>
+            {calendar.last_sync ? timestamp(calendar.last_sync) : "未取得"}
+          </dd>
+        </div>
+        {failed && calendar.last_attempt && (
+          <div>
+            <dt>最終試行</dt>
+            <dd>{timestamp(calendar.last_attempt)}</dd>
+          </div>
+        )}
+      </dl>
+      {teams && (
+        <p className="calendar-freshness-note">
+          この時刻はPC内のTeamsから読み取れた時刻です。Microsoft側の最新予定との同期を確認するものではありません。
+        </p>
+      )}
+      {[...new Set(source.warnings ?? [])].map((warning) => (
+        <p className="calendar-source-warning" key={warning}>
+          {warning}
+        </p>
+      ))}
+    </div>
   );
 }
 
@@ -1125,7 +1207,7 @@ export default function App() {
                         <strong>最初の準備を、ひとつずつ。</strong>
                         <p>
                           {teamsUiaCalendar
-                            ? "Teamsで本日のカレンダーを日表示で開き、同期しましょう。録音デバイス・音声モデル・LLM APIキーを確認したら、自動録音を有効にできます。Microsoftのアプリ登録やOutlookは不要です。"
+                            ? "初回はTeamsで本日のカレンダーを日表示にし、予定を読み取りましょう。その後は最小化・バックグラウンドで利用できます。録音デバイス・音声モデル・LLM APIキーを確認し、自動録音を有効にしてください。"
                             : teamsCalendar
                               ? "Teamsの連携準備・録音デバイス・音声モデル・LLM APIキーを確認しましょう。Microsoftのアプリ登録は不要です。予定取得が使えない場合も、手動で録音できます。"
                               : desktopCalendar
@@ -1174,7 +1256,7 @@ export default function App() {
                             void act(
                               "sync",
                               () => post("/sync"),
-                              "カレンダーを更新しました",
+                              "予定の取得状況を確認しました",
                             )
                           }
                         >
@@ -1182,7 +1264,7 @@ export default function App() {
                             size={14}
                             className={busy === "sync" ? "spin" : ""}
                           />
-                          同期
+                          {teamsCalendar ? "読み取る" : "同期"}
                         </button>
                       </div>
                       {partialCalendar && (
@@ -1190,19 +1272,15 @@ export default function App() {
                           <Monitor size={16} />
                           <div>
                             <strong>
-                              Teamsに表示中の予定のみ · プレビュー
+                              Teamsから読み取れた予定（一部） · プレビュー
                             </strong>
                             <p>
-                              今日のすべての予定を取得できているとは限りません。Teamsのカレンダーで本日を日表示にして同期してください。
+                              Teamsが保持する予定表から取得します。最小化・バックグラウンドでも読み取れますが、予定表が停止・破棄された場合は取得できません。本日の全件取得は保証しません。
                             </p>
                           </div>
                         </div>
                       )}
-                      {(microsoft.warnings ?? []).map((warning, index) => (
-                        <p className="calendar-source-warning" key={index}>
-                          {warning}
-                        </p>
-                      ))}
+                      {snapshot && <CalendarReadStatus snapshot={snapshot} />}
                       <div className="meeting-list">
                         {meetings.length ? (
                           meetings.map((meeting) => {
@@ -1322,9 +1400,9 @@ export default function App() {
                               title={
                                 teamsCalendar
                                   ? microsoft.connected
-                                    ? "表示中のTeams予定はありません"
+                                    ? "読み取れた本日の予定はありません"
                                     : teamsUiaCalendar
-                                      ? "Teamsで本日のカレンダーを表示"
+                                      ? "まずTeamsで本日のカレンダーを開く"
                                       : "Teams連携を準備しましょう"
                                   : microsoft.connected
                                     ? "本日のTeams会議はありません"
@@ -1336,9 +1414,9 @@ export default function App() {
                               <p>
                                 {teamsCalendar
                                   ? microsoft.connected
-                                    ? "Teamsのカレンダーで本日を日表示にし、同期してください。表示されていない予定は取得できない場合があります。"
+                                    ? "Teamsで本日のカレンダーを日表示にして、もう一度読み取ってください。Teamsが保持していない予定は取得できません。読み取り後は最小化して利用できます。"
                                     : teamsUiaCalendar
-                                      ? "Teamsでカレンダーを開き、「今日」・「日」表示にして同期してください。Microsoftのアプリ登録・Outlook・Teamsの再起動は不要です。予定取得が使えない場合も手動録音できます。"
+                                      ? "初回はTeamsでカレンダーを開き、「今日」・「日」表示にして読み取ってください。その後は最小化・バックグラウンドで利用できます。トレイに格納した際は、予定表が保持されている場合に限り読み取れます。"
                                       : "設定からTeamsデスクトップとの連携を準備できます。予定取得が使えない場合も、手動録音は利用できます。"
                                   : microsoft.connected
                                     ? "予定は自動で同期されます。予定外の会議も手動で録音できます。"
@@ -1355,13 +1433,13 @@ export default function App() {
                                       void act(
                                         "sync",
                                         () => post("/sync"),
-                                        "予定の同期を確認しました",
+                                        "予定の取得状況を確認しました",
                                       );
                                     } else navigate("settings");
                                   }}
                                 >
                                   {teamsUiaCalendar
-                                    ? "表示中のTeams予定を同期"
+                                    ? "Teamsの予定を読み取る"
                                     : teamsCalendar
                                       ? "Teams連携の設定へ"
                                       : desktopCalendar
@@ -1393,13 +1471,9 @@ export default function App() {
                       </div>
                       <p className="sync-caption">
                         <RefreshCw size={11} />
-                        {snapshot?.health.calendar.last_sync
-                          ? `最終同期 ${time(snapshot.health.calendar.last_sync)} · ${snapshot.settings.sync_interval_seconds}秒ごとに自動更新`
-                          : teamsCalendar
-                            ? "Teamsのカレンダーに現在表示されている予定を取得します"
-                            : desktopCalendar
-                              ? "このPCのOutlook（クラシック）から予定を取得します"
-                              : "選択したカレンダー接続から予定を取得します"}
+                        {snapshot
+                          ? `${snapshot.settings.sync_interval_seconds}秒ごとに${teamsCalendar ? "PC内のTeamsの予定表を読み取ります" : "予定の取得を試みます"}`
+                          : "予定の取得状況を確認しています"}
                       </p>
                     </section>
                     <section className="recent-section">
@@ -1873,7 +1947,7 @@ type Act = <T>(
   message?: string,
 ) => Promise<T | undefined>;
 
-function TeamsVisibleCalendar({
+function TeamsRetainedCalendar({
   snapshot,
   act,
   busy,
@@ -1905,24 +1979,26 @@ function TeamsVisibleCalendar({
         <li>
           <span>2</span>
           <p>
-            <strong>「今日」・「日」表示で、予定を画面に出す</strong>
-            読み取りたい予定が見える位置にスクロールしてください。Teamsの画面操作はご自身で行います。
+            <strong>「今日」・「日」表示で、本日の予定を読み込む</strong>
+            初回に本日のカレンダーを開いてください。Teamsが読み込んだ予定だけが対象です。必要に応じてご自身でスクロールしてください。
           </p>
         </li>
         <li>
           <span>3</span>
           <p>
-            <strong>表示中の予定を同期</strong>
-            以降はgijiの起動中に定期的に読み取ります。Teamsの表示状態によっては取得できません。
+            <strong>予定を読み取る</strong>
+            読み取り後はTeamsを最小化したり、別のアプリを前面で使ったりできます。gijiはTeamsを前面に出さず、保持されている予定表を定期的に読み取ります。
           </p>
         </li>
       </ol>
       <div className="teams-preview-note">
         <CircleHelp size={16} />
         <div>
-          <strong>表示されている予定だけを、読み取ります。</strong>
+          <strong>
+            最小化・バックグラウンドでも、予定表が保持されていれば取得。
+          </strong>
           <p>
-            gijiはTeamsの画面をクリックしたり、カレンダーを移動したりしません。画面外の予定は取得できないため、本日の予定がすべて揃うとは限りません。話者の実名は音声から確定せず、録音後にご自身で対応付けできます。
+            トレイに格納した場合も、Teamsが予定表の情報を保持している間だけ読み取れます。停止・破棄されると取得できず、本日の予定がすべて揃うとも限りません。gijiがTeamsを前面に移動したり、クリック・画面遷移したりすることはありません。
           </p>
         </div>
       </div>
@@ -1935,17 +2011,17 @@ function TeamsVisibleCalendar({
             await act(
               "sync",
               () => post("/sync"),
-              "表示中のTeams予定の同期を確認しました",
+              "予定の読み取り結果を確認してください",
             );
           }}
         >
           <RefreshCw size={15} className={busy === "sync" ? "spin" : ""} />
-          表示中のTeams予定を同期
+          Teamsの予定を読み取る
         </button>
         <span className="muted" role="status">
           {selected
             ? calendar.detail
-            : "保存して、表示中の予定を読み取る方式に切り替えます。"}
+            : "保存して、Teamsが保持する予定表を読み取る方式に切り替えます。"}
         </span>
       </div>
       <p className="setting-hint teams-fallback-note">
@@ -1988,9 +2064,9 @@ function TeamsSetup({
       <div className="teams-preview-note">
         <CircleHelp size={16} />
         <div>
-          <strong>取得できるのは、Teamsに現在表示されている予定です。</strong>
+          <strong>Teamsが保持する予定表を、前面に移動せず取得します。</strong>
           <p>
-            本日をカレンダーに表示して使用してください。表示外の予定や、Teamsの更新によって読み取れない予定があります。話者の実名は音声から確定せず、録音後にご自身で対応付けできます。
+            初回に本日の予定表を開いてください。カレンダーを別ウィンドウで開いて保持する方法も利用できます。最小化・バックグラウンド・トレイ格納時も予定表が読み込み済みで残っていれば取得しますが、停止・破棄された予定表は取得できません。
           </p>
         </div>
       </div>
@@ -2012,8 +2088,8 @@ function TeamsSetup({
         <li>
           <span>3</span>
           <p>
-            <strong>Teamsのカレンダーで、本日の予定を表示</strong>
-            準備から10分以内に通常の方法でTeamsを起動してください。「接続済み」になったら予定を同期できます。
+            <strong>Teamsのカレンダーで、本日の予定を読み込む</strong>
+            準備から10分以内に通常の方法でTeamsを起動してください。「接続済み」になったら今日のカレンダーを一度開き、予定を読み取ります。その後は最小化できます。
           </p>
         </li>
       </ol>
@@ -2102,12 +2178,12 @@ function TeamsSetup({
             await act(
               "sync",
               () => post("/sync"),
-              "表示中のTeams予定の同期を確認しました",
+              "予定の読み取り結果を確認してください",
             );
           }}
         >
           <RefreshCw size={15} className={busy === "sync" ? "spin" : ""} />
-          表示中の予定を同期
+          予定を読み取る
         </button>
         <button
           className="text-button teams-disconnect"
@@ -2210,7 +2286,7 @@ function SettingsPage({
     {
       label:
         microsoft.provider === "teams_desktop"
-          ? "Teamsの表示中の予定を確認"
+          ? "Teamsの予定の読み取りを確認"
           : microsoft.provider === "outlook_desktop"
             ? "Outlook・予定表を検出"
             : "Graphカレンダーに接続",
@@ -2320,7 +2396,7 @@ function SettingsPage({
               <div>
                 <h2>Teamsから、会議を取得</h2>
                 <p>
-                  いつものTeamsでカレンダーを開いて同期します。Outlook連携も任意で利用できます。
+                  最初に今日のカレンダーを開き、その後は最小化・バックグラウンドで利用できます。
                 </p>
               </div>
               <span
@@ -2359,7 +2435,7 @@ function SettingsPage({
                   <span className="preview-badge">プレビュー</span>
                 </strong>
                 <small>
-                  Teamsに現在表示されている予定を取得します。Microsoftのアプリ登録は不要です。
+                  Teamsが保持する予定表から取得します。Microsoftのアプリ登録は不要です。
                 </small>
               </span>
               {draft.calendar_source === "teams_desktop" && (
@@ -2369,7 +2445,7 @@ function SettingsPage({
             {draft.calendar_source === "teams_desktop" && (
               <>
                 {draft.teams_calendar_mode === "uia" && (
-                  <TeamsVisibleCalendar
+                  <TeamsRetainedCalendar
                     snapshot={snapshot}
                     act={act}
                     busy={busy}
@@ -2382,7 +2458,7 @@ function SettingsPage({
                 >
                   <summary>詳細設定：Teamsの接続方法</summary>
                   <p className="setting-hint">
-                    通常は「表示中の予定を読み取る」を使用してください。詳細接続は、ローカル接続の公開範囲を確認して利用する任意の機能です。
+                    通常は「Teamsが保持する予定表を読み取る」を使用してください。詳細接続は、ローカル接続の公開範囲を確認して利用する任意の機能です。
                   </p>
                   <div className="teams-mode-options">
                     <label
@@ -2400,11 +2476,11 @@ function SettingsPage({
                       />
                       <span>
                         <strong>
-                          表示中の予定を読み取る
+                          Teamsが保持する予定表を読み取る
                           <span className="recommended-badge">標準</span>
                         </strong>
                         <small>
-                          追加設定は不要です。Teamsの表示内容を読み取ります。
+                          追加設定は不要です。Teamsを前面に移動せず、読み取れる予定表を確認します。
                         </small>
                       </span>
                     </label>
@@ -2441,6 +2517,9 @@ function SettingsPage({
                     />
                   )}
                 </details>
+                {microsoft.provider === "teams_desktop" && (
+                  <CalendarReadStatus snapshot={snapshot} />
+                )}
               </>
             )}
             {(draft.calendar_source !== "teams_desktop" ||
@@ -2539,7 +2618,7 @@ function SettingsPage({
                       await act(
                         "sync",
                         () => post("/sync"),
-                        "Outlookの予定の同期を確認しました",
+                        "Outlookの予定の取得状況を確認しました",
                       );
                     }}
                   >
@@ -2773,7 +2852,7 @@ function SettingsPage({
                 <small>一時的な画面切り替えで録音が止まるのを防ぎます。</small>
               </label>
               <label className="field">
-                <span>予定の同期間隔（秒）</span>
+                <span>予定の読み取り間隔（秒）</span>
                 <input
                   type="number"
                   min="30"
@@ -2995,6 +3074,10 @@ function SettingsPage({
             ))}
             <p>
               準備ができたら短い会議で、両方の音声と退出時の停止を確認してください。ここには現在の設定・検出状況を表示しています。
+            </p>
+            <p>
+              ZIP同梱版にはPython
+              3.13が含まれます。PCへのPythonの追加設定は不要です。
             </p>
           </div>
           <div className="settings-info">

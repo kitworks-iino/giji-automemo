@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing release tag (for example v0.1.0)
+        description: Existing release tag (for example v0.4.0)
         required: true
-        default: v0.1.0
+        default: v0.4.0
         type: string
 
 permissions:
@@ -48,7 +48,7 @@ jobs:
                       output.write(path, "giji-automemo/" + path.as_posix())
               output.writestr(
                   "giji-automemo/START-HERE.txt",
-                  "Windows 11 x64 / Python 3.11 x64 required.\n"
+                  "Windows 11 x64 / standard Python x64 required. Python 3.13 recommended; 3.11/3.12 supported.\n"
                   "Source package with prebuilt UI. Node.js is not needed.\n\n"
                   "Open PowerShell in this folder and run:\n"
                   "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\setup.ps1 -SkipFrontend\n"

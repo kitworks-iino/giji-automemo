@@ -3333,6 +3333,63 @@ main {
   margin: 0 2px 12px;
   color: #a08c6d;
 }
+.calendar-read-status {
+  margin: 16px 0;
+  padding: 13px 15px;
+  border: 1px solid #e7ebe1;
+  border-radius: 8px;
+  background: #fbfcf8;
+  color: #819075;
+  font-size: 10px;
+  line-height: 1.8;
+  overflow-wrap: anywhere;
+}
+.calendar-read-status.cached {
+  background: #fcf8ed;
+  border-color: #eadfbc;
+  color: #a18c5b;
+}
+.calendar-read-heading {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 5px;
+}
+.calendar-read-heading svg {
+  flex-shrink: 0;
+}
+.calendar-read-heading strong {
+  font-weight: 600;
+}
+.calendar-read-status p {
+  margin: 4px 0;
+}
+.calendar-cache-warning {
+  font-weight: 550;
+}
+.calendar-read-times {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 20px;
+  margin: 10px 0 4px;
+  font-size: 9px;
+}
+.calendar-read-times > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 9px;
+}
+.calendar-read-times dt {
+  opacity: 0.85;
+}
+.calendar-read-times dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+.calendar-freshness-note {
+  font-size: 9px;
+  opacity: 0.85;
+}
 .manual-recording-link {
   display: flex;
   margin-left: auto;

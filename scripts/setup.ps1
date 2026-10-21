@@ -1,5 +1,7 @@
 param(
-    [switch]$SkipFrontend
+    [switch]$SkipFrontend,
+    [string]$Python = "",
+    [switch]$CheckPythonOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -13,25 +15,61 @@ function Assert-NativeSuccess([string]$Step) {
     }
 }
 
-Write-Host "Setting up Giji AutoMemo in $projectRoot"
-
-if (-not (Test-Path ".venv\Scripts\python.exe")) {
-    if (Get-Command py -ErrorAction SilentlyContinue) {
-        & py -3.11 -m venv .venv
-        Assert-NativeSuccess "Python 3.11 environment creation"
+function Find-CompatiblePython {
+    $checker = Join-Path $PSScriptRoot "check_python.py"
+    if ($Python) {
+        $selected = & $Python $checker
+        Assert-NativeSuccess "Requested Python interpreter check"
+        return $selected
     }
-    elseif (Get-Command python -ErrorAction SilentlyContinue) {
-        & python -c "import sys; assert sys.version_info[:2] == (3, 11), 'Install Python 3.11 x64 first'"
-        Assert-NativeSuccess "Python version check"
-        & python -m venv .venv
-        Assert-NativeSuccess "Virtual environment creation"
+    # Prefer 3.13, including company-managed installations without py.exe.
+    # A launcher with no matching runtime must not prevent the PATH fallback.
+    foreach ($minor in @("3.13", "3.12", "3.11")) {
+        if (Get-Command py -ErrorAction SilentlyContinue) {
+            try {
+                $selected = & py "-$minor" $checker --require-minor $minor 2>$null
+                if ($LASTEXITCODE -eq 0) { return $selected }
+            }
+            catch { } # Windows PowerShell may promote native stderr to an error.
+        }
+        foreach ($command in @("python", "python3")) {
+            if (Get-Command $command -ErrorAction SilentlyContinue) {
+                try {
+                    $selected = & $command $checker --require-minor $minor 2>$null
+                    if ($LASTEXITCODE -eq 0) { return $selected }
+                }
+                catch { }
+            }
+        }
     }
-    else {
-        throw "Install Python 3.11 x64 (with the Python launcher), then run this script again."
-    }
+    throw "Install standard Python 3.13 x64 (3.11/3.12 x64 also work), or pass -Python 'C:\path\python.exe'."
 }
 
+Write-Host "Setting up Giji AutoMemo in $projectRoot"
 $venvPython = Join-Path $projectRoot ".venv\Scripts\python.exe"
+if (Test-Path $venvPython) {
+    & $venvPython (Join-Path $PSScriptRoot "check_python.py")
+    if ($LASTEXITCODE -ne 0) {
+        throw "The existing .venv is incompatible. Keep your application data, move .venv aside, and run setup with standard Python 3.13 x64."
+    }
+    $selectedPython = $venvPython
+}
+else {
+    if (Test-Path (Join-Path $projectRoot ".venv")) {
+        throw "The existing .venv has no usable Windows Python. Move .venv aside and run setup again."
+    }
+    $selectedPython = Find-CompatiblePython
+}
+if ($CheckPythonOnly) {
+    Write-Host "Compatible Python: $selectedPython"
+    return
+}
+if (-not (Test-Path $venvPython)) {
+    & $selectedPython -m venv .venv
+    Assert-NativeSuccess "Virtual environment creation"
+    & $venvPython (Join-Path $PSScriptRoot "check_python.py")
+    Assert-NativeSuccess "Virtual environment interpreter check"
+}
 & $venvPython -m pip install --upgrade pip
 Assert-NativeSuccess "pip update"
 & $venvPython -m pip install -e ".[windows,local]"

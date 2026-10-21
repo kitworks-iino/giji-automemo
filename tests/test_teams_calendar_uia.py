@@ -246,9 +246,13 @@ class FakeControl:
             name=observed["name"], control_type=observed["kind"], visible=observed.get("visible", True),
             process_id=pid, element=SimpleNamespace(
                 CurrentAriaRole=observed["role"],
-                CurrentAriaProperties="selected=true" if observed.get("selected") else "",
+                CurrentAriaProperties=observed.get("aria_properties", "selected=true" if observed.get("selected") else ""),
+                CurrentIsControlElement=observed.get("is_control", True),
+                CurrentIsContentElement=observed.get("is_content", True),
             ),
         )
+        self.handle = observed.get("handle", 0)
+        self.iface_window = SimpleNamespace(CurrentWindowVisualState=observed.get("window_state", 0))
 
     def children(self):
         return [FakeControl(child) for child in self.observed["children"]]
@@ -258,6 +262,12 @@ class FakeControl:
 
     def click_input(self):
         raise AssertionError("UIA reader must never click controls")
+
+    def set_focus(self):
+        raise AssertionError("UIA reader must never foreground Teams")
+
+    def restore(self):
+        raise AssertionError("UIA reader must never restore Teams")
 
 
 def test_native_property_walker_is_read_only_hidden_aware_and_bounded():
@@ -302,10 +312,15 @@ def test_only_known_pywinauto_mta_import_warning_is_suppressed(
         assert len(recorded) == (1 if suppressed else 2)
 
 
-def test_native_collection_verifies_ownership_before_reading_calendar(monkeypatch):
+@pytest.mark.parametrize("background", [None, "minimized", "hidden"])
+def test_native_collection_verifies_ownership_before_reading_calendar(monkeypatch, background):
     import giji.teams_connection as connection
 
-    owned = FakeControl(calendar_tree("会議、10:00-11:00"), 11)
+    observed = calendar_tree("会議、10:00-11:00")
+    if background:
+        mark_offscreen(observed)
+    observed["handle"] = 123
+    owned = FakeControl(observed, 11)
     stranger = FakeControl(calendar_tree("PRIVATE other user, 12:00-13:00"), 99)
     identities = process_map()
     identities[99] = ProcessIdentity(99, "ms-teams.exe", r"C:\tmp\ms-teams.exe", "other-sid", 1, PACKAGE)
@@ -321,12 +336,116 @@ def test_native_collection_verifies_ownership_before_reading_calendar(monkeypatc
     desktop.windows.return_value = [stranger, owned]
     monkeypatch.setitem(sys.modules, "pywinauto", SimpleNamespace(Desktop=lambda **_: desktop))
     monkeypatch.setitem(sys.modules, "tzlocal", SimpleNamespace(get_localzone_name=lambda: "Asia/Tokyo"))
+    monkeypatch.setitem(sys.modules, "win32gui", SimpleNamespace(
+        IsWindow=lambda handle: handle == 123,
+        IsIconic=lambda _: background == "minimized",
+        IsWindowVisible=lambda _: background != "hidden",
+    ))
     snapshots = uia.collect_snapshots()
     assert len(snapshots) == 1
     assert "PRIVATE" not in str(snapshots)
+    assert snapshots[0]["background"] == background
+    desktop.windows.assert_called_once_with(visible_only=False, enabled_only=False)
     backend.prepare.assert_not_called()
     backend.check_policy.assert_not_called()
     backend.write_value.assert_not_called()
+
+
+def mark_offscreen(tree):
+    tree["visible"] = False
+    for child in tree.get("children", []):
+        mark_offscreen(child)
+
+
+@pytest.mark.parametrize("iconic,visible,expected", [
+    (True, True, "minimized"), (True, False, "minimized"),
+    (False, False, "hidden"), (False, True, None),
+])
+def test_native_window_classification_is_read_only(monkeypatch, iconic, visible, expected):
+    window = FakeControl(node("Teams", "Window", handle=123))
+    gui = SimpleNamespace(IsWindow=Mock(return_value=True), IsIconic=Mock(return_value=iconic),
+                          IsWindowVisible=Mock(return_value=visible))
+    monkeypatch.setitem(sys.modules, "win32gui", gui)
+    assert uia._window_background_state(window) == expected
+    gui.IsWindow.assert_called_once_with(123)
+    gui.IsIconic.assert_called_once_with(123)
+    if not iconic:
+        gui.IsWindowVisible.assert_called_once_with(123)
+
+
+def test_dead_handle_and_offscreen_alone_do_not_authorize_background_bypass(monkeypatch):
+    monkeypatch.setitem(sys.modules, "win32gui", SimpleNamespace(IsWindow=lambda _: False))
+    window = FakeControl(node("Teams", "Window", handle=123, visible=False))
+    assert uia._window_background_state(window) is None
+    assert uia._read_node(window, [100]) is None
+    window.iface_window.CurrentWindowVisualState = 1
+    assert uia._window_background_state(window) == "minimized"
+
+
+@pytest.mark.parametrize("background", ["minimized", "hidden"])
+def test_retained_background_calendar_can_be_read_without_foregrounding(background):
+    observed = calendar_tree("会議、10:00-11:00")
+    mark_offscreen(observed)
+    assert uia._read_node(FakeControl(observed), [100]) is None
+    tree = uia._read_node(FakeControl(observed), [100], allow_offscreen=True)
+    tree["background"] = background
+    snapshot = snapshot_from_tree(tree, "Asia/Tokyo")
+    result = parse_calendar_snapshot(snapshot, NOW)
+    assert snapshot["background"] == background
+    assert result["meetings"][0]["start"] == "2026-10-21T01:00:00+00:00"
+
+
+def test_background_ignores_explicit_aria_hidden_subtree_and_noncontent_leaf():
+    observed = calendar_tree("会議、10:00-11:00")
+    grid = observed["children"][-1]
+    grid["children"].extend([
+        node("Hidden group", aria_properties="hidden=true", children=[
+            node("PRIVATE hidden meeting, 12:00-13:00", "Button", "button")]),
+        node("PRIVATE raw meeting, 14:00-15:00", "Button", "button", is_control=False, is_content=False),
+    ])
+    mark_offscreen(observed)
+    tree = uia._read_node(FakeControl(observed), [100], allow_offscreen=True)
+    tree["background"] = "minimized"
+    assert "PRIVATE" not in str(tree)
+    snapshot = snapshot_from_tree(tree, "Asia/Tokyo")
+    assert len(snapshot["events"]) == 1
+
+
+@pytest.mark.parametrize("selected", [False, None])
+def test_background_does_not_read_inactive_or_unconfirmed_calendar(selected):
+    observed = calendar_tree("PRIVATE inactive calendar, 10:00-11:00")
+    observed["children"][0]["selected"] = selected
+    mark_offscreen(observed)
+    tree = uia._read_node(FakeControl(observed), [100], allow_offscreen=True)
+    tree["background"] = "hidden"
+    with pytest.raises(TeamsUIACalendarError, match="バックグラウンド"):
+        snapshot_from_tree(tree, "Asia/Tokyo")
+
+
+def test_background_date_picker_still_cannot_supply_missing_event_date():
+    observed = calendar_tree("Undated, 10:00-11:00")
+    del observed["children"][-1]["children"][0]
+    observed["children"].insert(0, node("Calendar", "DataGrid", "grid", children=[
+        node("2026年10月21日", "Text", "heading"),
+    ]))
+    mark_offscreen(observed)
+    tree = uia._read_node(FakeControl(observed), [100], allow_offscreen=True)
+    tree["background"] = "minimized"
+    snapshot = snapshot_from_tree(tree, "Asia/Tokyo")
+    assert snapshot["date_texts"] == []
+
+
+def test_background_provider_warns_about_suspended_refresh_and_missing_tree():
+    snapshot = {**today_snapshot(), "background": "minimized"}
+    calendar = TeamsUIACalendar(runner=make_runner([snapshot]))
+    assert calendar.fetch_today({})
+    assert calendar.status()["background"] is True
+    assert "前面に出さず" in calendar.status()["detail"]
+    assert any("更新が止まっている" in warning for warning in calendar.status()["warnings"])
+    failed = TeamsUIACalendar(runner=make_runner(error="background", returncode=1))
+    with pytest.raises(TeamsUIACalendarError, match="保存済みの予定は保持"):
+        failed.fetch_today({})
+    assert failed.status()["connected"] is False
 
 
 def test_worker_suppresses_raw_native_exceptions_and_uses_mta(monkeypatch, capsys):

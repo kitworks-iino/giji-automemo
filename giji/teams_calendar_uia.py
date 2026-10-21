@@ -1,9 +1,11 @@
-"""Read visible Teams calendar accessibility information without changing Teams.
+"""Read retained Teams calendar accessibility information without changing Teams.
 
 The Windows UI Automation provider is used only for property reads. This preview
 does not navigate, invoke controls, start Teams, enable debugging, or obtain
 credentials. UIA executes in an isolated process so a stalled WebView provider
-cannot block recording. No real Teams accessibility capture is bundled here.
+cannot block recording. Minimized/hidden owned windows can be read when Teams
+retains their accessible calendar; an absent/suspended tree cannot be recreated
+without changing the application. No real Teams capture is bundled here.
 """
 
 from __future__ import annotations
@@ -38,12 +40,22 @@ _EMPTY = re.compile(
     r"^(?:No (?:events|meetings)(?: scheduled| today| for today)?|There are no (?:events|meetings)(?: scheduled| today| for today)?|Nothing scheduled(?: today| for today)?|(?:今日|本日)の(?:予定|イベント|会議)はありません|(?:今日|本日)は(?:予定|イベント|会議)がありません|(?:予定|イベント|会議)(?:は|が)ありません)[.!。]?$",
     re.I,
 )
-_GUIDANCE = "Teams のカレンダーを開き、今日の予定を日表示にしてください。画面に表示された予定だけを読み取ります。"
+_GUIDANCE = "Teams のカレンダーで、今日の予定を一度日表示にしてください。取得できる画面情報が残っていれば、最小化中も同期します。"
+_BACKGROUND_GUIDANCE = (
+    "バックグラウンドの Teams から予定表の画面情報を確認できません。"
+    "必要なら Teams で今日の予定表を一度開いてください。"
+    "最小化・トレイ収納で情報が破棄される環境では取得できません。保存済みの予定は保持されます。"
+)
+_BACKGROUND_WARNING = (
+    "Teams を前面に出さず、保持されている画面情報を読み取っています。"
+    "バックグラウンドで更新が止まっている変更は反映されない場合があります。"
+)
 _ERRORS = {
     "platform": "Teams の画面連携は Windows 11 で利用できます。",
     "not_running": "サインイン済みの Teams デスクトップを開いてください。Outlook は不要です。",
     "unreadable": "Teams の画面を読み取れません。同じ Windows ユーザーで Teams を開いてください。",
     "calendar": _GUIDANCE,
+    "background": _BACKGROUND_GUIDANCE,
     "dependencies": "Windows 用の画面読み取りライブラリを利用できません。配布 ZIP を展開し直してください。",
     "worker": "Teams の画面読み取りを開始できませんでした。アプリを開き直してください。",
 }
@@ -115,6 +127,11 @@ def snapshot_from_tree(tree: dict, timezone_name: str) -> dict:
              or node.get("kind") in {"TabItem", "TreeItem", "Button"})
         for node in nodes
     )
+    background = tree.get("background") if isinstance(tree, dict) else None
+    if background in {"minimized", "hidden"} and not selected_calendar:
+        # Offscreen alone cannot distinguish a minimized app from an inactive
+        # Calendar page cached behind Chat. Require the active navigation state.
+        raise TeamsUIACalendarError(_BACKGROUND_GUIDANCE)
     has_today = any(_TODAY.fullmatch(_name(node))
                     and (node.get("role") == "button" or node.get("kind") == "Button") for node in nodes)
     roots = [node for node in nodes if _CALENDAR.search(_name(node))
@@ -171,14 +188,15 @@ def snapshot_from_tree(tree: dict, timezone_name: str) -> dict:
     empty = next((_name(node) for node in calendar_nodes if _EMPTY.fullmatch(_name(node))), "")
     return {"calendar_present": True, "timezone": timezone_name, "date_texts": date_texts,
             "day_column_texts": day_columns, "day_view": day_view, "events": events[:500],
-            "empty_text": empty, "truncated": len(nodes) >= MAX_NODES or len(events) > 500}
+            "empty_text": empty, "truncated": len(nodes) >= MAX_NODES or len(events) > 500,
+            "background": background if background in {"minimized", "hidden"} else None}
 
 
-def _read_node(control, budget: list[int], depth: int = 0) -> dict | None:
+def _read_node(control, budget: list[int], depth: int = 0, *, allow_offscreen: bool = False) -> dict | None:
     if budget[0] <= 0 or depth > MAX_DEPTH:
         return None
     info = control.element_info
-    if not info.visible:
+    if not allow_offscreen and not info.visible:
         return None
     budget[0] -= 1
     element = info.element
@@ -190,22 +208,67 @@ def _read_node(control, budget: list[int], depth: int = 0) -> dict | None:
         properties = str(element.CurrentAriaProperties or "").lower()
     except Exception:
         properties = ""
+    if re.search(r"(?:^|;)\s*(?:aria-)?hidden=true(?:;|$)", properties):
+        return None
+    exposed = True
+    if allow_offscreen:
+        # IsOffscreen is true for the whole minimized window, including its
+        # active page. Control/content membership still distinguishes exposed
+        # accessibility nodes from raw structural or ignored DOM nodes.
+        try:
+            exposed = bool(element.CurrentIsControlElement or element.CurrentIsContentElement)
+        except Exception:
+            exposed = False
     selected = bool(re.search(r"(?:^|;)\s*(?:selected|pressed|checked)=true(?:;|$)", properties))
     if not selected and info.control_type in {"TabItem", "TreeItem", "RadioButton", "Button", "ListItem"}:
         try:
             selected = bool(control.iface_selection_item.CurrentIsSelected)
         except Exception:
             pass
-    node = {"name": str(info.name or "")[:1500], "kind": info.control_type,
-            "role": role, "selected": selected, "visible": True, "children": []}
+    node = {"name": str(info.name or "")[:1500] if exposed else "", "kind": info.control_type,
+            "role": role if exposed else "", "selected": selected if exposed else False,
+            "visible": True, "children": []}
     if depth < MAX_DEPTH:
         for child in control.children():
             if budget[0] <= 0:
                 break
-            observed = _read_node(child, budget, depth + 1)
+            observed = _read_node(child, budget, depth + 1, allow_offscreen=allow_offscreen)
             if observed is not None:
                 node["children"].append(observed)
     return node
+
+
+def _window_background_state(window) -> str | None:
+    """Query native window state without activation, restoration or visibility writes.
+
+    UIA IsOffscreen alone is insufficient evidence: it is also true for hidden
+    DOM branches. The exception is permitted only for a proven native minimized
+    or hidden top-level window after its Teams ownership has been verified.
+    """
+    try:
+        handle = int(window.handle or 0)
+    except (AttributeError, TypeError, ValueError):
+        handle = 0
+    if handle:
+        try:
+            import win32gui
+
+            if win32gui.IsWindow(handle):
+                if win32gui.IsIconic(handle):
+                    return "minimized"
+                if not win32gui.IsWindowVisible(handle):
+                    return "hidden"
+                return None
+        except Exception:
+            pass
+    try:
+        # UIA WindowVisualState_Minimized is 1. Other states do not prove that
+        # invisible descendants belong to an active background calendar.
+        if int(window.iface_window.CurrentWindowVisualState) == 1:
+            return "minimized"
+    except Exception:
+        pass
+    return None
 
 
 def _desktop_class():
@@ -238,8 +301,9 @@ def collect_snapshots() -> list[dict]:
     process_cache = {}
     snapshots = []
     had_owned_window = False
+    had_background_window = False
     zone = get_localzone_name()
-    for window in Desktop(backend="uia").windows(visible_only=True, enabled_only=False):
+    for window in Desktop(backend="uia").windows(visible_only=False, enabled_only=False):
         try:
             pid = window.element_info.process_id
             if pid not in possible:
@@ -256,8 +320,11 @@ def collect_snapshots() -> list[dict]:
             if not is_teams_owned_process(pid, process_cache, owner):
                 continue
             had_owned_window = True
-            tree = _read_node(window, [MAX_NODES])
+            background = _window_background_state(window)
+            had_background_window = had_background_window or background is not None
+            tree = _read_node(window, [MAX_NODES], allow_offscreen=background is not None)
             if tree:
+                tree["background"] = background
                 snapshots.append(snapshot_from_tree(tree, zone))
             if len(snapshots) >= 4:
                 break
@@ -266,7 +333,8 @@ def collect_snapshots() -> list[dict]:
             # owned window may still expose the requested calendar.
             continue
     if not snapshots:
-        raise TeamsUIACalendarError(_GUIDANCE if had_owned_window else _ERRORS["unreadable"])
+        raise TeamsUIACalendarError(_BACKGROUND_GUIDANCE if had_background_window
+                                    else _GUIDANCE if had_owned_window else _ERRORS["unreadable"])
     return snapshots
 
 
@@ -346,10 +414,12 @@ class TeamsUIACalendar:
             meetings = {}
             warnings = []
             parsed_any = False
+            background_read = False
             for snapshot in snapshots:
                 try:
                     parsed = parse_calendar_snapshot(snapshot)
                     parsed_any = True
+                    background_read = background_read or snapshot.get("background") in {"minimized", "hidden"}
                     meetings.update({meeting["id"]: meeting for meeting in parsed["meetings"]})
                     warnings.extend(warning for warning in parsed["warnings"]
                                     if "ブラウザーのタイムゾーン" not in warning)
@@ -359,25 +429,31 @@ class TeamsUIACalendar:
                 raise TeamsUIACalendarError(_GUIDANCE)
             warnings += ["画面で確認した予定のみです。画面外の予定や後から変更・取消された予定は再確認が必要です。",
                          "表示時刻は Windows のタイムゾーンで解釈します。Teams の表示地域と一致させてください。"]
+            if background_read:
+                warnings.append(_BACKGROUND_WARNING)
             self._public.update(state="connected", connected=True, coverage="visible_only",
-                                detail=("Teams の表示中の予定を読み取りました。Outlook や追加登録は不要です。"
-                                        if meetings else "Teams の表示中の予定表には今日の予定がありません。"),
+                                detail=("Teams を前面に出さず、保持されている今日の予定情報を読み取りました。"
+                                        if background_read and meetings else
+                                        "Teams の予定情報を読み取りました。Outlook や追加登録は不要です。"
+                                        if meetings else "Teams から取得できた範囲には今日の予定がありません。"),
+                                background=background_read,
                                 warnings=list(dict.fromkeys(warnings)))
             return sorted(meetings.values(), key=lambda meeting: (meeting["start"], meeting["id"]))
         except subprocess.TimeoutExpired:
             error = "Teams の画面読み取りが時間切れになりました。Teams の予定表を表示して再試行してください。録音は継続します。"
-            self._public.update(state="error", connected=False, detail=error, coverage="unknown")
+            self._public.update(state="error", connected=False, detail=error, coverage="unknown", background=False)
             raise TeamsUIACalendarError(error) from None
         except Exception as exc:
             error = str(exc) if isinstance(exc, TeamsUIACalendarError) else _ERRORS["unreadable"]
-            self._public.update(state="error", connected=False, detail=error, coverage="unknown")
+            self._public.update(state="error", connected=False, detail=error, coverage="unknown", background=False)
             raise TeamsUIACalendarError(error) from None
         finally:
             self._lock.release()
 
     def close(self) -> None:
         self._closed = True
-        self._public.update(state="unavailable", connected=False, detail="Teams の画面読み取りを終了しました。")
+        self._public.update(state="unavailable", connected=False, background=False,
+                            detail="Teams の画面読み取りを終了しました。")
 
 
 if __name__ == "__main__":
